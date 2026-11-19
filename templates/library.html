@@ -1,0 +1,33 @@
+{% from 'chrome.html' import navigation %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Projects · Shortlist Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
+</head>
+<body class="studio-app">
+  {{ navigation('library') }}
+  <main id="main-content" class="studio-content utilities">
+  <header class="page-heading"><h1>Saved projects</h1></header>
+  <section class="project-list" aria-label="Projects">
+  {% for id, job in entries %}
+    <article>
+      <h2>{{ job.source_name or job.clips[0].title }}</h2>
+      <ol>
+      {% for clip in job.clips %}
+        <li>{{ clip.title }} · <a href="{{ clip.preview }}">Preview</a>
+          {% if clip.editor %} · <a href="{{ clip.editor }}">Edit &amp; review</a>{% endif %}
+        </li>
+      {% endfor %}
+      </ol>
+      <a href="/jobs/{{ id }}/download">Download project exports</a>
+    </article>
+  {% else %}
+    <p>Generated clips will appear here after the first export.</p>
+  {% endfor %}
+  </section>
+  </main>
+</body>
+</html>

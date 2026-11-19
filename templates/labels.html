@@ -1,0 +1,49 @@
+{% from 'chrome.html' import navigation %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Label gameplay · Shortlist Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
+  <script defer src="{{ url_for('static', filename='labels.js') }}"></script>
+</head>
+<body class="studio-app">
+  {{ navigation('labels') }}
+  <main id="main-content" class="studio-content utilities">
+  <header class="page-heading"><h1>Label gameplay moments</h1></header>
+  <p>Load a local video or excerpt. Mark moments you would expect a clipper to find, along with ordinary gameplay for comparison. Video stays in this browser.</p>
+  <label>Video <input id="media" type="file" accept="video/*"></label>
+  <video id="player" controls playsinline hidden></video>
+  <form id="label-form">
+    <label for="source">YouTube link or video ID</label>
+    <input id="source" required>
+    <label for="offset">Excerpt start in the original video, in seconds</label>
+    <input id="offset" type="number" min="0" step="0.01" value="0" required>
+    <div class="range">
+      <label>Start <input id="start" type="number" min="0" step="0.01" required></label>
+      <button type="button" data-capture="start" disabled>Use playhead</button>
+      <label>End <input id="end" type="number" min="0" step="0.01" required></label>
+      <button type="button" data-capture="end" disabled>Use playhead</button>
+    </div>
+    <label for="category">Moment type</label>
+    <select id="category">
+      <option value="position_change">Position change</option>
+      <option value="crash">Crash</option>
+      <option value="close_escape">Close escape</option>
+      <option value="overtake">Overtake</option>
+      <option value="vehicle_maneuver">Vehicle maneuver</option>
+      <option value="pursuit">Pursuit</option>
+      <option value="funny_reaction">Funny reaction</option>
+      <option value="ordinary">Ordinary footage</option>
+    </select>
+    <label for="note">What can you see or hear?</label>
+    <input id="note" maxlength="300" required>
+    <button type="submit">Add label</button>
+  </form>
+  <p id="status" role="status"></p>
+  <ol id="labels"></ol>
+  <button type="button" id="export" hidden>Download labels</button>
+  </main>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{% from 'chrome.html' import navigation %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blind clip benchmark · Shortlist Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
+  <script src="{{ url_for('static', filename='benchmark.js') }}" defer></script>
+</head>
+<body class="studio-app">
+  {{ navigation('benchmark') }}
+  <main id="main-content" class="studio-content utilities">
+  <header class="page-heading"><h1>Blind clip benchmark</h1></header>
+  <section id="setup">
+    <p>Load clips cut from the same source video. The reviewer sees them in random order, with tool names revealed after the last rating. Files stay in this browser.</p>
+    <form id="setup-form">
+      <label for="source-label">Source video or test name</label>
+      <input id="source-label" name="sourceName" required maxlength="150">
+      <div id="tools"></div>
+      <p>Use each tool’s top five exports where available. Visible watermarks or distinctive templates can reveal the tool.</p>
+      <button>Start blind review</button>
+    </form>
+  </section>
+  <section id="review" hidden>
+    <h2 id="clip-label"></h2>
+    <video id="candidate" controls playsinline preload="metadata"></video>
+    <form id="rating-form">
+      <label>Would you post this Short?
+        <select name="post" required><option value="">Choose</option><option>Yes</option><option>No</option></select>
+      </label>
+      <label>Does the on-video headline match the action?
+        <select name="accuracy" required><option value="">Choose</option><option>Accurate</option><option>Inaccurate</option><option>Unclear or absent</option></select>
+      </label>
+      <label>Estimated editing needed, in minutes
+        <input name="editMinutes" type="number" min="0" max="120" step="0.5">
+      </label>
+      <button>Save rating</button>
+    </form>
+  </section>
+  <section id="summary" hidden>
+    <h2>Benchmark results</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Tool</th><th>Would post</th><th>Accurate headlines</th><th>Avg. edit min.</th><th>First clip</th></tr></thead>
+        <tbody id="metrics"></tbody>
+      </table>
+    </div>
+    <button id="export">Export ratings</button>
+  </section>
+  </main>
+</body>
+</html>
