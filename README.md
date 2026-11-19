@@ -1,0 +1,50 @@
+# Shortlist Studio
+
+Local studio for turning videos into captioned clips. It transcribes with faster-whisper, selects speech or gaming highlights, and renders MP4s with FFmpeg. Podcast jobs can request up to 20 clips and a 30- to 120-second duration limit. Gaming jobs return up to five highlights.
+
+## Run locally
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
+```
+
+Open http://127.0.0.1:5050, paste an accessible YouTube, Vimeo, or Zoom recording link you have permission to clip, and select **Generate Shorts**. Gaming replay window search applies to YouTube. Link imports use yt-dlp with Node.js 22 or newer on PATH. Recordings that require a login or password can be supplied as a local video file. The first run downloads the Whisper base model. Use the `SHORTLIST_MODEL` environment variable to select another faster-whisper model or a local model folder.
+
+Choose **Podcast / interview** for transcript-led picks and automatic face tracking. **Gaming stream / GTA highlights** ranks moments using changes in motion, sound and spoken reactions. Gaming exports preserve the full source frame in a vertical layout so the HUD stays visible. The detector still misses some quiet gameplay moments and can produce ordinary picks.
+
+YouTube gaming mode offers Quick (up to four minutes), Balanced (up to eight) and Deep (up to 24) coverage across long replays. It scans motion and audio first, then transcribes the most promising windows. Quick visually reviews up to two candidates. YouTube replay-activity peaks help select windows when available. Shortlist filters repeated footage by timestamp and visual similarity, so distinct moments can both survive when their suggested titles match. Enter a specific start time to scan three minutes from that point. For a broadcast YouTube is still processing, Shortlist can reuse the public replay manifest across windows. Active broadcasts remain unsupported.
+
+Spoken language defaults to auto-detection. You can also enter a Whisper language code such as `en`, `hi`, `kn`, or `es`. Captions use the spoken language. Automatic language detection applies to the file as a whole. Install fonts for the scripts used in your footage if your system lacks them. The ranking uses general punctuation and pacing cues, plus English hook and contrast words.
+
+Each clip starts with an editable headline and separate timed speech captions. **Saved projects** reopens original footage, exported variants and review notes after restart. The app stores them in `.shortlist-data` by default. Set `SHORTLIST_DATA_DIR` to use another local directory.
+
+## Edit and export
+
+- Open **Edit clip** to correct caption text, set the start and end from the transcript or in seconds, or exclude a passage. Excluding a passage cuts both its audio and video and retimes the remaining captions.
+- **Follow faces** adjusts the crop using detected faces and mouth movement. Choose **Fit entire frame** to preserve the gaming HUD or **Center crop** for a fixed position.
+- Choose a caption style, accent color and optional brand text. The brand preset is saved in the current browser.
+- Upload a B-roll image or video, or search Wikimedia Commons for a still. Set its start time or match it to a caption keyword. The source audio continues under the B-roll. Stock exports provide an attribution file to accompany the clip. Gain, steady-noise reduction and loudness normalization are available in the audio controls.
+- Render the same edit in 9:16, 1:1 and 16:9, or use **Render batch** to create additional formats for every original clip in a job. **Download all exports** packages the original clips and rendered variants in a ZIP.
+- Add timed review notes on the original preview, exchange them as JSON, or create a revocable review link. Review links give access to the original exported clip and its comments.
+
+Face tracking estimates the subject from the video and can miss speaker changes in multi-person or obscured shots. Stock searches return stills with supported Commons license metadata. The editor suggests the current caption as a search query and lets you choose the asset. In Chromium browsers you can select a local recording folder, such as an OBS output folder, and Shortlist selects its newest video.
+
+## Review from another device
+
+The editor runs on loopback. To make only the review page reachable from another device, configure `SHORTLIST_REVIEW_BIND` for a separate review listener, optionally set `SHORTLIST_REVIEW_PORT` (default 5051), and set `SHORTLIST_REVIEW_URL` to the address reviewers can open. For hosted review, put the review-only listener behind HTTPS. Links grant access to a single clip until revoked or replaced. The listener serves preview and comments without editing or administrative routes. This is a link-based workflow with no hosted accounts or billing.
+
+Gaming mode can review shortlisted clips with a local SmolVLM2 model. The first run downloads its weights. Visual review samples the beginning, strongest moment and ending of each reviewed clip and uses visible actions, vehicles and settings to refine the ranking and headline. When a gaming headline is generic or repeats a stronger pick's title, the card shows its timestamp and the rendered video leaves the headline blank for you to write in the editor. Turn off visual review for faster motion, audio, and transcript-based results. See [the research and benchmarking notes](RESEARCH.md).
+
+When Visual AI is enabled, local OCR checks the lower-right race HUD on three frames before and three after each reviewed gaming moment. A position-change headline requires repeated readings with race context and the same displayed field size. A did-not-finish headline requires repeated, player-specific result text. Other HUD layouts may produce no reading.
+
+Open [Clip benchmark](http://127.0.0.1:5050/benchmark) to compare MP4s from the same source. Import one to five candidates per tool, enter each tool's time to first clip, and have a reviewer rate the randomized set. The page calculates postability, headline accuracy, and editing effort, then exports the ratings as JSON. Shortlist shows its time to first clip in the results. The benchmark uses local browser file previews.
+
+Use [Label gameplay moments](http://127.0.0.1:5050/labels) to create timestamped ground truth. Enter the source video's time offset if labeling an excerpt. After generating Shorts, use **Download evaluation data**, then score the run locally:
+
+```powershell
+python evaluation.py benchmarks/gameplay-labels.json path-to-shortlist-evaluation.json
+```
+
+The scorer distinguishes moments outside the scan from detection and ranking misses. It measures the union of the decoded audio intervals as scan coverage and matches each label by its midpoint. The included labels are a small exploratory set. They do not substitute for blind ratings.
