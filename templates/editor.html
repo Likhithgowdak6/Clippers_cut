@@ -1,0 +1,127 @@
+{% from 'chrome.html' import navigation %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edit clip · Shortlist Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
+  <script id="project" type="application/json">{{ project | tojson }}</script>
+  <script defer src="{{ url_for('static', filename='editor.js') }}"></script>
+</head>
+<body class="studio-app">
+  {{ navigation('library') }}
+  <main id="main-content" class="studio-content">
+    <header class="page-heading"><a href="/library">Saved projects</a><h1>Edit clip</h1></header>
+    <div class="editor-layout">
+    <section class="panel preview" aria-label="Preview">
+      <div class="editor-stage">
+        <video id="preview" controls playsinline preload="metadata"
+          src="/jobs/{{ project.jobId }}/clips/clip-{{ project.index }}.mp4"></video>
+      </div>
+      <p id="status" role="status"></p>
+      <ul id="exports">
+        {% for files, credits in previous_exports %}
+          {% for file in files %}
+            <li><a href="{{ file.url }}" target="_blank" rel="noopener">Preview {{ file.label }}</a> ·
+                <a href="{{ file.url }}?download">Download MP4</a></li>
+          {% endfor %}
+          {% if credits %}<li><a href="{{ credits }}?download">Download stock attribution</a></li>{% endif %}
+        {% endfor %}
+      </ul>
+      <a href="/jobs/{{ project.jobId }}/download">Download job exports as ZIP</a>
+      <details class="advanced-options review-details">
+        <summary>Review notes</summary>
+        <form id="note-form" class="row">
+          <input id="note" aria-label="Review note" maxlength="500" placeholder="Add a note at the playhead" required>
+          <button type="submit">Add note</button>
+        </form>
+        <ul id="notes"></ul>
+        <a id="review-download" href="/jobs/{{ project.jobId }}/editor/{{ project.index }}/notes?download">Download notes</a>
+        <label>Import review notes <input id="notes-import" type="file" accept=".json,application/json"></label>
+        <div class="row">
+          <button type="button" id="share-review">Create review link</button>
+          <button type="button" id="revoke-review">Revoke review link</button>
+        </div>
+        <input id="share-url" readonly hidden aria-label="Review link">
+      </details>
+    </section>
+    <form class="panel" id="edit-form">
+      <div class="editor-tabs" role="tablist" aria-label="Editing controls" hidden>
+        <button type="button" role="tab" id="transcript-tab" aria-controls="transcript-panel" aria-selected="true">Transcript</button>
+        <button type="button" role="tab" id="appearance-tab" aria-controls="appearance-panel" aria-selected="false">Appearance</button>
+        <button type="button" role="tab" id="media-tab" aria-controls="media-panel" aria-selected="false">B-roll &amp; audio</button>
+      </div>
+      <div id="transcript-panel" role="tabpanel" aria-labelledby="transcript-tab">
+      <label>Headline <input id="headline" maxlength="90" value="{{ project.headline }}"></label>
+      <fieldset>
+        <legend>Transcript &amp; trim</legend>
+        <div class="grid">
+          <label>Start, seconds <input id="start" type="number" min="0" step="0.001" value="0" required></label>
+          <label>End, seconds <input id="end" type="number" min="0" step="0.001" required></label>
+        </div>
+        <small>Edit caption text or trim to a caption boundary. Exclude a passage to remove its audio and video.</small>
+        <div id="cues" class="transcript"></div>
+      </fieldset>
+      </div>
+      <div id="appearance-panel" role="tabpanel" aria-labelledby="appearance-tab">
+      <fieldset>
+        <legend>Framing &amp; formats</legend>
+        <div class="grid">
+          <label>Framing <select id="framing"><option value="smart">Follow faces</option><option value="center">Center crop</option><option value="fit">Fit entire frame</option></select></label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" name="shape" value="vertical" checked> 9:16 · Shorts</label>
+          <label><input type="checkbox" name="shape" value="square"> 1:1 · Square</label>
+          <label><input type="checkbox" name="shape" value="wide"> 16:9 · Widescreen</label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Captions &amp; brand</legend>
+        <div class="grid">
+          <label>Caption style <select id="style"><option value="bold">Bold white</option><option value="minimal">Compact</option><option value="accent">Brand accent</option></select></label>
+          <label>Brand text <input id="brand" maxlength="40" placeholder="Optional"></label>
+          <label>Accent color <input id="color" type="color" value="#e3ff82"></label>
+        </div>
+        <div class="row">
+          <button type="button" id="save-preset">Save brand preset</button>
+          <button type="button" id="load-preset">Load preset</button>
+        </div>
+      </fieldset>
+      </div>
+      <div id="media-panel" role="tabpanel" aria-labelledby="media-tab">
+      <fieldset>
+        <legend>B-roll</legend>
+        <div class="row">
+          <input id="stock-query" aria-label="Stock image search" maxlength="100" placeholder="Search Wikimedia Commons">
+          <button type="button" id="stock-search">Search stock</button>
+          <button type="button" id="stock-caption">Use current caption</button>
+        </div>
+        <small id="stock-status" role="status"></small>
+        <div class="grid" id="stock-results"></div>
+        <label>Photo or video <input id="broll" type="file" accept=".jpg,.jpeg,.png,.mp4,.mov,.webm"></label>
+        <div class="grid">
+          <label>Match a caption word <input id="broll-keyword" placeholder="Optional"></label>
+          <label>Start in edited clip <input id="broll-start" type="number" min="0" step="0.1" value="0"></label>
+          <label>Duration, seconds <input id="broll-duration" type="number" min="0.25" max="20" step="0.05" value="3"></label>
+        </div>
+        <small>When a word is set, your asset appears at the first matching caption.</small>
+      </fieldset>
+      <fieldset>
+        <legend>Audio</legend>
+        <label>Volume adjustment, dB <input id="volume" type="number" min="-18" max="12" step="0.5" value="0"></label>
+        <div class="row">
+          <label><input id="clean-audio" type="checkbox"> Reduce steady noise</label>
+          <label><input id="normalize" type="checkbox"> Normalize loudness</label>
+        </div>
+      </fieldset>
+      </div>
+      <div class="editor-controls">
+        <button type="submit">Render selected formats</button>
+        <p id="feedback" role="status"></p>
+      </div>
+    </form>
+    </div>
+  </main>
+</body>
+</html>

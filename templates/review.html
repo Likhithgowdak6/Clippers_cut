@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review clip · Shortlist Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
+  <script defer src="{{ url_for('static', filename='review.js') }}"></script>
+</head>
+<body><main class="review-shell">
+  <h1>{{ title or "Clip review" }}</h1>
+  <video id="review-video" controls playsinline src="/review/{{ token }}/media"></video>
+  <form id="review-form">
+    <p><label for="review-note">Comment at the playhead</label></p>
+    <input id="review-note" maxlength="500" required>
+    <button>Add comment</button>
+  </form>
+  <p id="review-status" role="status"></p>
+  <ol id="comments"></ol>
+</main></body>
+</html>
