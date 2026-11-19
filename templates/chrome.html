@@ -1,0 +1,31 @@
+{% macro icon(name, size=20) -%}
+<svg width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{% if name == "mark" %}<path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/><path d="m10 8 6 4-6 4z"/>
+{% elif name == "create" %}<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8m-4-4h8"/>
+{% elif name == "folder" %}<path d="M3 8V6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+{% elif name == "bars" %}<path d="M4 20V5m0 15h16M8 16v-4m5 4V7m5 9v-6"/>
+{% elif name == "tag" %}<path d="M3 4h8l9 9-7 7-10-10z"/><circle cx="7.5" cy="8" r="1"/>
+{% elif name == "link" %}<path d="m10 13 4-4m-6 7-2 2a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0m4-1 2-2a3.5 3.5 0 0 1 5 5l-4 4a3.5 3.5 0 0 1-5 0" transform="translate(1 0)"/>
+{% elif name == "chevron" %}<path d="m7 10 5 5 5-5"/>
+{% elif name == "arrow" %}<path d="M4 12h15m-6-6 6 6-6 6"/>
+{% elif name == "video" %}<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 9 5 3-5 3z"/>
+{% endif %}
+</svg>
+{%- endmacro %}
+
+{% macro navigation(active) -%}
+<a class="skip-link" href="#main-content">Skip to content</a>
+<aside class="studio-rail">
+  <a class="studio-brand" href="/" aria-label="Shortlist Studio home">
+    <span class="brand-mark">{{ icon("mark", 20) }}</span>
+    <span>Shortlist <small>Studio</small></span>
+  </a>
+  <nav aria-label="Studio navigation">
+    <a href="/" {% if active == 'create' %}aria-current="page"{% endif %}>{{ icon("create") }}<span>Create clips</span></a>
+    <a href="/library" {% if active == 'library' %}aria-current="page"{% endif %}>{{ icon("folder") }}<span>Saved projects</span></a>
+    <a href="/benchmark" {% if active == 'benchmark' %}aria-current="page"{% endif %}>{{ icon("bars") }}<span>Benchmark</span></a>
+    <a href="/labels" {% if active == 'labels' %}aria-current="page"{% endif %}>{{ icon("tag") }}<span>Label moments</span></a>
+  </nav>
+</aside>
+<script defer src="{{ url_for('static', filename='navigation.js') }}"></script>
+{%- endmacro %}
