@@ -1,0 +1,52 @@
+{
+  "sources": {
+    "qSyo5d-dVzA": [
+      {
+        "start": 148,
+        "end": 167,
+        "category": "ordinary",
+        "note": "Face-camera commentary in the previously generated short. No gameplay action is visible in the reviewed interval."
+      },
+      {
+        "start": 50435,
+        "end": 50437,
+        "category": "ordinary",
+        "note": "Early riding. The HUD repeatedly read 5/14 near the start of this interval."
+      },
+      {
+        "start": 50440,
+        "end": 50444,
+        "category": "position_change",
+        "note": "The selected bike-race moment. Repeated HUD readings support a 5th-to-6th change across the before/after windows. Cause and race exit are unverified."
+      }
+    ],
+    "MCP71ny8wAo": [
+      {
+        "start": 9,
+        "end": 30,
+        "category": "ordinary",
+        "note": "The playable character stands in a lobby while other characters move around the room."
+      },
+      {
+        "start": 92,
+        "end": 102,
+        "category": "vehicle_maneuver",
+        "note": "The police van turns sideways across the bridge roadway after another vehicle comes close. The reviewed frames do not establish a completed escape."
+      }
+    ],
+    "Te-8Ysf1ICQ": [
+      {
+        "start": 51,
+        "end": 74,
+        "category": "pursuit",
+        "note": "A marked police car repeatedly approaches and follows closely as the player's dark sedan turns through the intersection."
+      },
+      {
+        "start": 107,
+        "end": 116,
+        "category": "ordinary",
+        "note": "The sedan drives straight on the highway in the reviewed frames, without a visible collision or abrupt maneuver."
+      }
+    ]
+  }
+}

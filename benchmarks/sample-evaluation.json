@@ -1,0 +1,19 @@
+{
+  "video_id": "qSyo5d-dVzA",
+  "coverage_seconds": 439.83,
+  "coverage_percent": 0.514,
+  "first_clip_seconds": 200.0,
+  "exported_clips": 2,
+  "labeled_moments": 1,
+  "labeled_moments_exported": 0,
+  "exports_touching_only_ordinary_labels": 0,
+  "events": [
+    {
+      "start": 50440,
+      "end": 50444,
+      "category": "position_change",
+      "note": "The selected bike-race moment. Repeated HUD readings support a 5th-to-6th change across the before/after windows. Cause and race exit are unverified.",
+      "outcome": "outside_scan"
+    }
+  ]
+}

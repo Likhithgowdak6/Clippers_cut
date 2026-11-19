@@ -1,0 +1,20 @@
+{
+  "video_id": "Te-8Ysf1ICQ",
+  "coverage_seconds": 119.99,
+  "coverage_percent": null,
+  "first_clip_seconds": 29.0,
+  "exported_clips": 5,
+  "labeled_moments": 1,
+  "labeled_moments_exported": 1,
+  "exports_touching_only_ordinary_labels": 1,
+  "events": [
+    {
+      "start": 51,
+      "end": 74,
+      "category": "pursuit",
+      "note": "A marked police car repeatedly approaches and follows closely as the player's dark sedan turns through the intersection.",
+      "outcome": "exported"
+    }
+  ],
+  "event_export_rank": 3
+}
