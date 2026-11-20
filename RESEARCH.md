@@ -48,6 +48,10 @@ The label editor and evaluation manifest make this diagnosis repeatable. Record 
 
 The seed set contains visually reviewed intervals from the supplied bike replay and two edited GTA roleplay stream excerpts. It covers a HUD position change, a police van maneuver, a pursuit, and ordinary footage. Labels describe what was visible. They do not infer a completed escape, a crash, or a creator's reaction from the video title. The edited excerpts provide a small detector check rather than a representative benchmark of raw streams. [Bike replay](https://www.youtube.com/watch?v=qSyo5d-dVzA) · [Police-van excerpt](https://www.youtube.com/watch?v=MCP71ny8wAo) · [Pursuit excerpt](https://www.youtube.com/watch?v=Te-8Ysf1ICQ)
 
+The bike clip was frame-matched against a frame-accurate replay excerpt. The saved clip starts at 14:02:58, and the HUD changes from 5/14 to 6/14 at 14:03:06 at one-second sampling. This supersedes the earlier label at 14:00:42. The benchmark now requires the exported HUD readings to match the labeled change, even when the export spans the right timestamp. [Corrected replay moment](https://www.youtube.com/watch?v=qSyo5d-dVzA&t=50586s)
+
+On the 40-second replay excerpt beginning at 14:02:50, the local detector exported the labeled 5/14-to-6/14 change as the fourth of five clips after distinct position changes were allowed to survive overlap filtering. The first export arrived in 44.2 seconds on this machine. The excerpt was selected by timestamp, so this result measures detection and ranking once the correct footage is available.
+
 With visual review off, the two edited roleplay excerpts were each scanned for 120 seconds. The van maneuver reached the candidate set but was not exported. The pursuit was within scanned footage but missed by candidate detection. A subsequent Quick test on the bike replay got no readable windows from the public replay manifest, so it produced no comparable latency measurement. Shortlist now retries failed shared-manifest imports using a refreshed per-window request.
 
 ### Ranking regression
@@ -61,3 +65,34 @@ Shortlist now compares several seconds of activity with the preceding quieter st
 ### Gameplay headline evidence
 
 The updated visual review samples the start, the signal peak and the end, and crops the model input toward gameplay to reduce corner-webcam interference. The exported framing is independent of the analysis crop. In two labeled checks, the model initially described the streamer in the police-van excerpt. The cropped review identified a police van and a highway but missed the sideways turn. In the pursuit excerpt, it described the player's car without identifying the pursuit. These checks show improved scene identification on the van sample, with event identification still unreliable on both excerpts. Shortlist now leaves weak or repeated automatic headlines blank rather than attaching the same generic hook to distinct clips.
+
+A conditional second pass checks five frames within roughly two seconds of the selected moment. On the van excerpt, the overview described a passing van and the close view described a stationary van. Shortlist suppresses the passing headline in that conflict. On the pursuit excerpt, both passes described a blue car but neither identified the pursuing police vehicle. This check protects headline accuracy in one observed failure case. It does not demonstrate recovery of either labeled event.
+## Viewer-first editing
+
+Shorts creator Jenny Hoyos describes opening with an immediate reason to watch and resolving it as a miniature story. Gaming creator discussions also favor clips with a surprising or funny payoff and enough context for a stranger to follow. These discussions are qualitative input. Use YouTube's Stayed to watch metric for the opening and audience retention for what happens after it. [YouTube creator interview](https://blog.youtube/creator-and-artist-stories/youtube-shorts-deep-dive/) · [Gaming Shorts discussion](https://www.reddit.com/r/letsplay/comments/1b06ve7) · [YouTube Shorts analytics](https://support.google.com/youtube/answer/12942217?co=YOUTUBE._YTVideoType%3Dshorts)
+
+The editor now lets creators audition up to three seconds from the selected start with audio muted. For clips with a detected moment, it can also suggest a later start while preserving time before the event and avoiding a cut inside an existing caption cue.
+
+## Wider replay search
+
+Wide mode plans up to 120 non-overlapping one-minute windows. In a plan generated from the supplied replay's public metadata and 52 comment clusters, an isolated viewer timestamp prompted a nearby window from 14:02:15 to 14:03:15. That window includes the labeled bike moment at 14:03:06. Planning coverage is measured separately from successful imports, candidate detection, and export ranking.
+
+The selected window downloaded and decoded successfully. Initially, earlier changes filled all five candidate slots. After ranking HUD changes by repeated evidence around the event, the detector retained the labeled 5/14-to-6/14 change among the five candidates for that window. This check did not run final ranking across all 120 windows or compare exports with vendor results.
+
+## GitHub clipping projects
+
+This review compares repository documentation and implementation descriptions. Quality and speed claims need a run on the same footage before they can be used as benchmarks.
+
+| Project | What Shortlist can learn |
+| --- | --- |
+| [Hypeline](https://github.com/Angel-Casas/Hypeline) | Put audience peaks on a replay timeline with clickable timestamps. Add Shortlist’s scanned intervals, candidate marks, and HUD evidence so creators can see why a moment was picked or missed. |
+| [Clipper by guleriaakshit](https://github.com/guleriaakshit/clipper) | Use a rolling buffer for live markers. For completed streams, accept existing timestamped chat files and reuse the local audience scorer. |
+| [Stream Clipper](https://github.com/sidgaikwad/stream-clipper) | Keep chat and audio sensitivity configurable and ship structured clip metadata alongside video for downstream editing. |
+| [TwitchDownloader](https://github.com/lay295/TwitchDownloader/blob/master/TwitchDownloaderCLI/README.md) | Treat footage ranges and timestamped chat as separate inputs. An import adapter can bring both into Shortlist’s existing replay and audience pipeline. |
+| [OpenClipper](https://github.com/GrepCut/OpenClipper) | Reset subject tracking at shot boundaries and smooth camera paths inside a shot. Apply that pattern to a gameplay and facecam layout with room for the HUD. |
+| [OpenShorts](https://github.com/plexormedia/openshorts) and [Clipper by Steezy-code](https://github.com/Steezy-code/clipper) | Give gaming creators explicit stream and split layouts. Let creators choose how to frame mixed game and facecam footage. |
+| [AutoClip](https://github.com/artbyjazi/autoclip) and [WhisperX](https://github.com/m-bain/whisperX) | Consider opt-in speaker labels and word alignment for co-streams, interviews, and other footage where people take turns talking. |
+| [Auto-Editor](https://github.com/WyattBlue/auto-editor) | Give creators a reversible preview of optional dead-air trims and preserve setup before action. |
+| [PySceneDetect](https://github.com/Breakthrough/PySceneDetect/blob/main/website/pages/api.md) | Compare abrupt frame changes with nearby activity before classifying them as cuts. Shortlist now combines this idea with a brightness-histogram check and applies it to replay scouting and sustained-motion detection. |
+
+The next product step is the replay timeline. It can use existing audience offsets, decoded coverage, candidates, and export timestamps. A useful acceptance test is whether a creator can identify an unscanned event or click a viewer spike and inspect the surrounding footage.
