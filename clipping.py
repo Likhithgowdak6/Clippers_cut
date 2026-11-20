@@ -22,6 +22,7 @@ class Clip:
     event_time: float | None = None
     hud: dict | None = None
     visual_event: bool = False
+    audience: dict | None = None
 
 
 SENTENCE_END = (".", "!", "?", "。", "！", "？", "؟", "।", "॥")
@@ -103,7 +104,7 @@ def gameplay_headline(segments, reaction):
     return "Things get chaotic" if reaction else "The action picks up"
 
 
-def rank_gameplay(segments, audio, motion, duration, *, sustained=()):
+def rank_gameplay(segments, audio, motion, duration, *, sustained=(), limit=5):
     candidates = []
     reaction_times = [
         ((segment.start + segment.end) / 2, segment)
@@ -149,10 +150,14 @@ def rank_gameplay(segments, audio, motion, duration, *, sustained=()):
     for clip in sorted(candidates, key=lambda item: (-item.score, item.start)):
         if all(not same_gameplay_moment(clip, other) for other in selected):
             selected.append(clip)
-    return selected[:5]
+            if len(selected) >= limit:
+                break
+    return selected
 
 
 def same_gameplay_moment(left, right, left_offset=0, right_offset=0):
+    if left.hud and right.hud and left.hud != right.hud:
+        return False
     overlap = min(left.end + left_offset, right.end + right_offset) - max(
         left.start + left_offset, right.start + right_offset
     )
