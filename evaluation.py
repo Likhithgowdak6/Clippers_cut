@@ -24,7 +24,8 @@ def score(labels, job):
         raise ValueError(f"No labels for YouTube video {source!r}.")
     coverage = job.get("coverage") or []
     candidates = [(clip["start"], clip["end"]) for clip in job.get("candidates_found") or []]
-    picks = [(clip["start"], clip["end"]) for clip in job["clips"][:5]]
+    exports = job["clips"][:5]
+    picks = [(clip["start"], clip["end"]) for clip in exports]
     events = []
     ordinary = []
     for label in labels["sources"][source]:
@@ -32,8 +33,13 @@ def score(labels, job):
         if label["category"] == "ordinary":
             ordinary.append(anchor)
             continue
-        if any(covers(interval, anchor) for interval in picks):
-            outcome = "exported"
+        matching_exports = [clip for clip, interval in zip(exports, picks) if covers(interval, anchor)]
+        if matching_exports:
+            expected = label.get("hud", {})
+            outcome = "exported" if any(
+                all((clip.get("hud") or {}).get(key) == value for key, value in expected.items())
+                for clip in matching_exports
+            ) else "exported_without_matching_hud"
         elif any(covers(interval, anchor) for interval in candidates):
             outcome = "candidate_not_exported"
         elif any(covers(interval, anchor) for interval in coverage):
