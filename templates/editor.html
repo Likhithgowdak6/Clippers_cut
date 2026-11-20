@@ -7,7 +7,7 @@
   <title>Edit clip · Shortlist Studio</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
   <script id="project" type="application/json">{{ project | tojson }}</script>
-  <script defer src="{{ url_for('static', filename='editor.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='editor.js', v='opening-preview') }}"></script>
 </head>
 <body class="studio-app">
   {{ navigation('library') }}
@@ -61,6 +61,13 @@
           <label>End, seconds <input id="end" type="number" min="0" step="0.001" required></label>
         </div>
         <small>Edit caption text or trim to a caption boundary. Exclude a passage to remove its audio and video.</small>
+        <div class="row">
+          <button type="button" id="preview-opening">Preview opening on mute</button>
+          {% if project.moment is not none %}
+          <button type="button" id="tighten-opening">Trim closer to the moment</button>
+          {% endif %}
+        </div>
+        <small id="opening-feedback" role="status"></small>
         <div id="cues" class="transcript"></div>
       </fieldset>
       </div>

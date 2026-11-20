@@ -44,6 +44,65 @@ const seconds = (number) => Number(number.toFixed(3));
 for (const name of ["start", "end"]) field(name).max = seconds(project.duration);
 field("end").value = seconds(project.duration);
 
+const openingFeedback = field("opening-feedback");
+let openingPreview = null;
+
+function finishOpeningPreview() {
+  if (!openingPreview) return;
+  preview.muted = openingPreview.wasMuted;
+  openingPreview = null;
+}
+
+preview.addEventListener("pause", finishOpeningPreview);
+preview.addEventListener("ended", finishOpeningPreview);
+preview.addEventListener("timeupdate", () => {
+  if (openingPreview && !preview.seeking && preview.currentTime >= openingPreview.end) {
+    preview.pause();
+    finishOpeningPreview();
+  }
+});
+
+field("preview-opening").addEventListener("click", async () => {
+  const start = field("start").valueAsNumber;
+  const end = field("end").valueAsNumber;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > project.duration + .001) {
+    openingFeedback.textContent = "Choose a valid start and end to preview the opening.";
+    return;
+  }
+  finishOpeningPreview();
+  const stop = Math.min(start + 3, end);
+  openingPreview = {end: stop, wasMuted: preview.muted};
+  preview.muted = true;
+  preview.currentTime = start;
+  try {
+    await preview.play();
+    openingFeedback.textContent = `Previewing ${seconds(stop - start)} seconds on mute. Check whether the action is clear.`;
+  } catch {
+    finishOpeningPreview();
+    openingFeedback.textContent = "The opening preview could not play.";
+  }
+});
+
+field("tighten-opening")?.addEventListener("click", () => {
+  const current = field("start").valueAsNumber;
+  const end = field("end").valueAsNumber;
+  if (end < project.moment + 1 || project.moment - current <= 3 || !Number.isFinite(current) || !Number.isFinite(end)) {
+    openingFeedback.textContent = "Keep at least three seconds before the moment and one second afterward for this trim.";
+    return;
+  }
+  const target = project.moment - 3;
+  const cue = project.cues.find(({start, end}) => start < target && target < end);
+  const start = seconds(Math.max(current, cue?.start ?? target));
+  if (start <= current) {
+    openingFeedback.textContent = "The current opening already starts at the relevant caption boundary.";
+    return;
+  }
+  preview.pause();
+  field("start").value = start;
+  preview.currentTime = start;
+  openingFeedback.textContent = `Start set to ${start}s. Preview it on mute or adjust the start before exporting.`;
+});
+
 function cueButton(label, callback) {
   const button = document.createElement("button");
   button.type = "button";
