@@ -1,0 +1,18 @@
+services:
+  shortlist:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:${SHORTLIST_PORT:-5052}:5050"
+    environment:
+      SHORTLIST_GEMINI_API_KEY: ${SHORTLIST_GEMINI_API_KEY:-}
+    volumes:
+      - shortlist-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050/', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 4
+volumes:
+  shortlist-data:

@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!requirements.txt
+!*.py
+!bike-race-hud-verified.mp4
+!static/
+!static/**
+!templates/
+!templates/**
