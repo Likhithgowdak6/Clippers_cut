@@ -47,24 +47,60 @@ def stable_placement(frames):
 def inspect_hud(source, start, end, event_time):
     if event_time is None or event_time - start < 4 or end - event_time < 4:
         return None
-    width, height = 576, 384
     # Three snapshots before and three after the event. Only the cropped HUD is decoded.
-    origin = event_time - 4
+    lines = sample_hud(source, event_time - 4, 8.5, "fps=1,select='lte(n,2)+gte(n,6)'")
+    return compare_placements(lines) if len(lines) == 6 else None
+
+
+def sample_hud(source, start, duration, filters):
+    width, height = 576, 384
     raw = subprocess.run(
-        [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(origin),
-         "-i", str(source), "-t", "8.5", "-map", "0:v:0",
-         "-vf", "fps=1,select='lte(n,2)+gte(n,6)',"
+        [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(start),
+         "-i", str(source), "-t", str(duration), "-map", "0:v:0",
+         "-vf", f"{filters},"
                 f"crop=iw*0.24:ih*0.35:iw*0.76:ih*0.65,scale={width}:{height}",
-         "-an", "-frames:v", "6", "-fps_mode", "vfr", "-c:v", "rawvideo", "-threads", "1",
+         "-an", "-fps_mode", "vfr", "-c:v", "rawvideo", "-threads", "1",
          "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"],
         check=True, capture_output=True, timeout=30,
     ).stdout
     frames = np.frombuffer(raw, dtype=np.uint8).reshape(-1, height, width, 3)
-    if len(frames) != 6:
-        return None
     engine = ocr_engine()
-    lines = [engine(frame, use_cls=False)[0] for frame in frames]
-    return compare_placements(lines)
+    return [engine(frame, use_cls=False)[0] for frame in frames]
+
+
+def scan_hud_changes(source, duration):
+    events = []
+    for start in range(0, int(duration), 45):
+        origin = max(0, start - 6)
+        lines = sample_hud(source, origin, min(duration, start + 51) - origin, "fps=1")
+        placements = [read_placement(frame)[0] for frame in lines]
+        for index in range(3, len(lines) - 2):
+            time = origin + index
+            if not start <= time < start + 45:
+                continue
+            hud = compare_placements(lines[index - 3:index + 3])
+            if not hud or (not hud.get("result") and hud["before"] == hud["after"]):
+                continue
+            before = (hud["before"], hud["entrants"])
+            after = (hud["after"], hud["entrants"])
+            leadup = placements[max(0, index - 6):index]
+            followup = placements[index:index + 6]
+            support = (2 * min(leadup.count(before), followup.count(after)) if hud["after"] is not None else 6)
+            support += int(leadup[-1] == before) + int(followup[0] == after)
+            events.append((time, hud, support))
+    selected = []
+    for time, hud, support in sorted(events, key=lambda event: (-event[2], event[0])):
+        if all(abs(time - other_time) >= 6 or hud != other for other_time, other, _ in selected):
+            selected.append((time, hud, support))
+    return selected
+
+
+def placement_headline(hud):
+    if hud.get("result") == "did_not_finish":
+        return "The race ends without a finish"
+    old, new, entrants = hud["before"], hud["after"], hud["entrants"]
+    action = "Drops" if new > old else "Moves up"
+    return f"{action} from {old}/{entrants} to {new}/{entrants}"
 
 
 def compare_placements(lines):
