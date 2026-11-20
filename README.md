@@ -16,6 +16,15 @@ Open [Shortlist Studio in Docker](http://127.0.0.1:5052/). Set `SHORTLIST_PORT` 
 
 Use `docker compose logs -f shortlist` to follow processing or `docker compose down` to stop the container while keeping its data volume.
 
+### Private YouTube uploads
+
+1. Enable **YouTube Data API v3** in your Google Cloud project. Configure the OAuth consent screen and add your Google account as a test user if the app is in testing.
+2. Create a **Web application** OAuth client. Add `http://127.0.0.1:5052/youtube/callback` as an authorized redirect URI, using your actual Shortlist port if you changed it.
+3. Set `SHORTLIST_YOUTUBE_CLIENT_ID` and `SHORTLIST_YOUTUBE_CLIENT_SECRET` in the environment that runs Docker Compose, or in the project's ignored `.env` file. Recreate the service with `docker compose up -d --build --wait`. For a direct Python launch on port 5050, set `SHORTLIST_YOUTUBE_CALLBACK=http://127.0.0.1:5050/youtube/callback` and register that URI too.
+4. Open Shortlist at the configured address, click **Connect YouTube for private uploads**, and select your channel. On a job you want to upload, check **Upload the top Short as private** before generating.
+
+Shortlist uploads the first final vertical export and saves its YouTube Studio link. Uploads require a separate opt-in on each job. Identical local exports and matching YouTube clip ranges on the same channel are checked against a local upload ledger. If an upload has an uncertain result, check YouTube Studio before submitting again. OAuth credentials live in the local data volume and should be kept private.
+
 ## Run locally
 
 ```powershell
@@ -38,6 +47,8 @@ Each clip starts with an editable headline and separate timed speech captions. *
 
 - Open **Edit clip** to correct caption text, set the start and end from the transcript or in seconds, or exclude a passage. Excluding a passage cuts both its audio and video and retimes the remaining captions.
 - **Follow faces** adjusts the crop using detected faces and mouth movement. Choose **Fit entire frame** to preserve the gaming HUD or **Center crop** for a fixed position.
+- **Gameplay and facecam** puts a manually selected facecam rectangle in its own panel on vertical exports. The **Vertical preview** renders the first four seconds from the chosen start and can show an approximate safe-area guide. Enable **Highlight each spoken word** to use the accent color on timed words. Rewritten caption lines keep their line timing.
+- Drag and resize the facecam crop on the original frame. Save a named crop in the browser to reuse it on clips from the same stream layout.
 - Choose a caption style, accent color and optional brand text. The brand preset is saved in the current browser.
 - Upload a B-roll image or video, or search Wikimedia Commons for a still. Set its start time or match it to a caption keyword. The source audio continues under the B-roll. Stock exports provide an attribution file to accompany the clip. Gain, steady-noise reduction and loudness normalization are available in the audio controls.
 - Render the same edit in 9:16, 1:1 and 16:9, or use **Render batch** to create additional formats for every original clip in a job. **Download all exports** packages the original clips and rendered variants in a ZIP.
@@ -62,6 +73,10 @@ If an automatic scan stops or the server restarts, submit the same YouTube link 
 Automatic YouTube gaming scans also look for timestamps in public video comments and bursts of unique viewers in public replay chat. These signals can steer scan windows and surface candidate clips even before the footage has a clear local signal. Shortlist looks for a limited sample of audience activity and continues with video and audio when that data is unavailable. The app retains aggregate signals for the job rather than saving downloaded chat transcripts.
 
 Gaming clip cards show matching audience activity and readable race position changes when available. YouTube cards can jump to the detected moment in the original replay, and the detection details show the underlying observations.
+
+Completed automatic YouTube scans include a **Replay map** with audience peaks, scanned footage, candidates, and exports. Select a time to watch the original replay or prepare a targeted scan with 15 seconds of lead-up. Saved projects can reopen the map, including completed scans that yielded no clips.
+
+On longer Deep and Wide scans, Shortlist can show a preliminary Short after three readable windows while the remaining downloads continue. The early pick is a 540×960 preview. Final exports are ranked after the scan and use the standard export quality. Deep and Wide reserve detailed analysis slots for audience activity and sustained gameplay as well as the overall scouting score.
 
 Balanced and Deep can take a second look at closely spaced frames around a top candidate when the first review is weak. Quick uses one pass per reviewed candidate. This adds inference time and can clarify a movement, but specific crashes and other severe claims still need supporting evidence.
 

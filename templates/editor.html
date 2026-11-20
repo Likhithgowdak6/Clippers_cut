@@ -7,7 +7,7 @@
   <title>Edit clip · Shortlist Studio</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
   <script id="project" type="application/json">{{ project | tojson }}</script>
-  <script defer src="{{ url_for('static', filename='editor.js', v='opening-preview') }}"></script>
+  <script defer src="{{ url_for('static', filename='editor.js', v='visual-crop') }}"></script>
 </head>
 <body class="studio-app">
   {{ navigation('library') }}
@@ -75,7 +75,7 @@
       <fieldset>
         <legend>Framing &amp; formats</legend>
         <div class="grid">
-          <label>Framing <select id="framing"><option value="smart">Follow faces</option><option value="center">Center crop</option><option value="fit">Fit entire frame</option></select></label>
+          <label>Framing <select id="framing"><option value="smart">Follow faces</option><option value="center">Center crop</option><option value="fit">Fit entire frame</option><option value="gameplay">Gameplay and facecam</option></select></label>
         </div>
         <div class="row">
           <label><input type="checkbox" name="shape" value="vertical" checked> 9:16 · Shorts</label>
@@ -86,13 +86,52 @@
       <fieldset>
         <legend>Captions &amp; brand</legend>
         <div class="grid">
-          <label>Caption style <select id="style"><option value="bold">Bold white</option><option value="minimal">Compact</option><option value="accent">Brand accent</option></select></label>
+          <label>Caption style <select id="style"><option value="bold">Bold white</option><option value="minimal">Compact</option><option value="accent">Brand accent</option><option value="neon">Neon cyan</option><option value="candy">Berry backdrop</option></select></label>
+          <label>Caption font <select id="caption-font"><option value="sans">Bold sans</option><option value="serif">Editorial serif</option><option value="mono">Typewriter</option></select></label>
           <label>Brand text <input id="brand" maxlength="40" placeholder="Optional"></label>
           <label>Accent color <input id="color" type="color" value="#e3ff82"></label>
         </div>
+        <div id="caption-style-preview" class="caption-style-preview" aria-label="Caption style preview"><span id="caption-style-sample">Caption preview</span></div>
+        <label><input id="word-highlight" type="checkbox"> Highlight each spoken word</label>
+        <small>Uses the accent color when word timings are available. Rewritten captions display as whole lines.</small>
         <div class="row">
           <button type="button" id="save-preset">Save brand preset</button>
           <button type="button" id="load-preset">Load preset</button>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Vertical preview</legend>
+        <div class="row">
+          <button type="button" id="render-layout-preview">Preview 4 seconds</button>
+          <label><input type="checkbox" id="preview-guides"> Show safe-area guide</label>
+        </div>
+        <small>Checks the layout, headline and captions from the selected start.</small>
+        <p id="layout-preview-status" role="status"></p>
+        <div class="crop-comparison">
+          <div id="facecam-crop" hidden>
+            <p>Drag the box over the facecam. Pull the bottom-right corner to resize it.</p>
+            <div id="facecam-source" class="facecam-source" hidden>
+              <div id="facecam-box" class="facecam-box" aria-hidden="true"><span class="facecam-handle" data-resize></span></div>
+            </div>
+            <p id="facecam-status" role="status"></p>
+            <details>
+              <summary>Exact crop values</summary>
+              <div class="grid">
+                <label>Left (%) <input id="facecam-x" type="number" min="0" max="95" step="0.1" value="0"></label>
+                <label>Top (%) <input id="facecam-y" type="number" min="0" max="95" step="0.1" value="44"></label>
+                <label>Width (%) <input id="facecam-width" type="number" min="5" max="100" step="0.1" value="21"></label>
+                <label>Height (%) <input id="facecam-height" type="number" min="5" max="100" step="0.1" value="26"></label>
+              </div>
+            </details>
+            <div class="row">
+              <label>Preset name <input id="crop-preset-name" maxlength="35" placeholder="e.g. Racing setup"></label>
+              <button type="button" id="save-crop-preset">Save crop</button>
+            </div>
+            <label>Load a crop <select id="crop-presets"><option value="">Choose a saved crop</option></select></label>
+          </div>
+          <div id="layout-preview-stage" class="layout-preview-stage" hidden>
+            <video id="layout-preview-video" controls playsinline aria-label="Rendered vertical preview"></video>
+          </div>
         </div>
       </fieldset>
       </div>

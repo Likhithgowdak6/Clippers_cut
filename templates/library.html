@@ -14,7 +14,7 @@
   <section class="project-list" aria-label="Projects">
   {% for id, job in entries %}
     <article>
-      <h2>{{ job.source_name or job.clips[0].title }}</h2>
+      <h2>{{ job.source_name or (job.clips[0].title if job.clips else 'YouTube replay') }}</h2>
       <ol>
       {% for clip in job.clips %}
         <li>{{ clip.title }} · <a href="{{ clip.preview }}">Preview</a>
@@ -22,7 +22,10 @@
         </li>
       {% endfor %}
       </ol>
-      <a href="/jobs/{{ id }}/download">Download project exports</a>
+      {% if job.video_id and job.source_seconds %}<a href="/?job={{ id }}#replay-map">Open replay map</a>{% endif %}
+      {% if job.clips %}<a href="/jobs/{{ id }}/download">Download project exports</a>{% endif %}
+      {% if job.publishing and job.publishing.url %}<a href="{{ job.publishing.url }}">Open in YouTube Studio</a>{% endif %}
+      {% if job.publishing and not job.publishing.url %}<a href="/?job={{ id }}#job-progress">View upload status</a>{% endif %}
     </article>
   {% else %}
     <p>Generated clips will appear here after the first export.</p>

@@ -6,6 +6,9 @@ services:
       - "127.0.0.1:${SHORTLIST_PORT:-5052}:5050"
     environment:
       SHORTLIST_GEMINI_API_KEY: ${SHORTLIST_GEMINI_API_KEY:-}
+      SHORTLIST_YOUTUBE_CLIENT_ID: ${SHORTLIST_YOUTUBE_CLIENT_ID:-}
+      SHORTLIST_YOUTUBE_CLIENT_SECRET: ${SHORTLIST_YOUTUBE_CLIENT_SECRET:-}
+      SHORTLIST_YOUTUBE_CALLBACK: http://127.0.0.1:${SHORTLIST_PORT:-5052}/youtube/callback
     volumes:
       - shortlist-data:/data
     healthcheck:

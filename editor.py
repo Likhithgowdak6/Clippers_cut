@@ -9,7 +9,7 @@ from functools import lru_cache
 import imageio_ffmpeg
 import numpy as np
 
-from clipping import Segment, caption_cues, captions
+from clipping import CAPTION_FONTS, CAPTION_STYLES, Segment, timed_caption_cues, captions
 
 FORMATS = {"vertical": (1080, 1920), "square": (1080, 1080), "wide": (1920, 1080)}
 
@@ -27,6 +27,9 @@ class ExportOptions:
     broll_start: float = 0
     broll_duration: float = 3
     kept_ranges: tuple = ()
+    caption_font: str = "sans"
+    facecam: tuple = (0, 44, 21, 26)
+    word_highlight: bool = False
 
 
 def parse_edit(clip, payload):
@@ -47,15 +50,17 @@ def parse_edit(clip, payload):
         raise ValueError("Choose at least one export format.")
     framing = payload.get("framing", "smart")
     style = payload.get("style", "bold")
+    caption_font = payload.get("caption_font", "sans")
+    word_highlight = bool(payload.get("word_highlight"))
     color = payload.get("color", "E3FF82").lstrip("#")
     headline = payload.get("headline", clip.hook).strip()
     brand = payload.get("brand", "").strip()
-    if framing not in {"smart", "center", "fit"} or style not in {"bold", "minimal", "accent"}:
+    if framing not in {"smart", "center", "fit", "gameplay"} or style not in CAPTION_STYLES or caption_font not in CAPTION_FONTS:
         raise ValueError("Choose a supported framing mode and caption style.")
     if not re.fullmatch(r"[0-9A-Fa-f]{6}", color) or len(headline) > 90 or len(brand) > 40:
         raise ValueError("Check the brand color and text lengths.")
-    cues = caption_cues(clip)
-    edits = payload.get("captions", [text for _, _, text in cues])
+    cues = timed_caption_cues(clip)
+    edits = payload.get("captions", [text for _, _, text, _ in cues])
     if len(edits) != len(cues) or any(not isinstance(text, str) or len(text) > 200 for text in edits):
         raise ValueError("Each caption must have up to 200 characters.")
     absolute_start, absolute_end = clip.start + start, clip.start + end
@@ -78,7 +83,7 @@ def parse_edit(clip, payload):
         raise ValueError("Keep at least one second of footage.")
     has_cuts = kept != [(absolute_start, absolute_end)]
     segments = []
-    for index, ((a, b, _), text) in enumerate(zip(cues, edits)):
+    for index, ((a, b, original, words), text) in enumerate(zip(cues, edits)):
         if index in muted or not text.strip():
             continue
         shift = 0
@@ -86,7 +91,9 @@ def parse_edit(clip, payload):
             low, high = max(a, left), min(b, right)
             if high > low:
                 correction = shift - left if has_cuts else 0
-                segments.append(Segment(low + correction, high + correction, text.strip()))
+                aligned = tuple((max(low, x) + correction, min(high, y) + correction, word)
+                                for x, y, word in words if y > low and x < high) if word_highlight and text.strip() == original else ()
+                segments.append(Segment(low + correction, high + correction, text.strip(), aligned))
             shift += right - left
     base_time = 0 if has_cuts else absolute_start
     broll_start = number("broll_start", 0, 0, edited_duration)
@@ -98,9 +105,19 @@ def parse_edit(clip, payload):
             raise ValueError("The B-roll keyword was not found in the retained captions.")
         broll_start = max(0, match.start - base_time)
     edited = replace(clip, start=base_time, end=base_time + edited_duration, hook=headline, segments=tuple(segments))
+    facecam = (0, 44, 21, 26)
+    if framing == "gameplay":
+        x = number("facecam_x", 0, 0, 95)
+        y = number("facecam_y", 44, 0, 95)
+        w = number("facecam_width", 21, 5, 100)
+        h = number("facecam_height", 26, 5, 100)
+        if x + w > 100.000001 or y + h > 100.000001:
+            raise ValueError("Keep the facecam crop inside the source frame.")
+        facecam = (x, y, w, h)
     options = ExportOptions(formats, framing, style, brand, color.upper(), bool(payload.get("clean_audio")),
                             bool(payload.get("normalize")), number("volume", 0, -18, 12),
-                            broll_start, broll_duration, tuple(kept) if has_cuts else ())
+                            broll_start, broll_duration, tuple(kept) if has_cuts else (), caption_font=caption_font,
+                            facecam=facecam, word_highlight=word_highlight)
     return edited, options
 
 
@@ -169,28 +186,50 @@ def face_commands(source, clip, directory):
     return "sendcmd=f=focus.txt,", "crop@focus"
 
 
-def render_format(source, clip, output, options, shape, *, broll=None, tracking=None):
+def render_format(source, clip, output, options, shape, *, broll=None, tracking=None, preview=False):
     width, height = FORMATS[shape]
+    if preview:
+        width //= 2
+        height //= 2
     directory = output.parent
     subtitle = output.with_suffix(".ass")
-    subtitle.write_text(captions(clip, width, height, options.style, options.brand, options.color), encoding="utf-8")
+    subtitle.write_text(captions(clip, width, height, options.style, options.brand, options.color,
+                                options.caption_font, options.word_highlight), encoding="utf-8")
     dimensions = f"{width}:{height}"
-    if options.framing == "fit":
+    split_gameplay = options.framing == "gameplay" and shape == "vertical"
+    if options.framing in {"fit", "gameplay"}:
         framing = (f"scale={dimensions}:flags=lanczos:force_original_aspect_ratio=decrease:force_divisible_by=2,"
                    f"pad={dimensions}:(ow-iw)/2:(oh-ih)/2:0x151515")
     else:
         send, crop = tracking or ("", "crop")
         framing = f"scale={dimensions}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,{send}{crop}={dimensions}"
     base = [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(clip.start), "-i", str(source)]
+    graph = f"[0:v]{framing},setsar=1[main];"
+    if split_gameplay:
+        x, y, w, h = (value / 100 for value in options.facecam)
+        panel_w, panel_h = width * 42 // 200 * 2, height * 16 // 200 * 2
+        game_h = height * 42 // 200 * 2
+        graph = (
+            "[0:v]split=2[game][cam];"
+            f"[game]scale={width}:{game_h}:flags=lanczos:force_original_aspect_ratio=decrease:"
+            f"force_divisible_by=2,pad={width}:{game_h}:(ow-iw)/2:(oh-ih)/2:0x151515,"
+            f"pad={dimensions}:0:{height * 38 // 100}:0x151515,setsar=1[stage];"
+            f"[cam]crop=iw*{w:.6f}:ih*{h:.6f}:iw*{x:.6f}:ih*{y:.6f},"
+            f"scale={panel_w}:{panel_h}:flags=lanczos:force_original_aspect_ratio=increase:"
+            f"force_divisible_by=2,crop={panel_w}:{panel_h},setsar=1[face];"
+            f"[stage][face]overlay=(W-w)/2:{height * 21 // 100}[main];"
+        )
     if broll:
         start, end = options.broll_start, options.broll_start + options.broll_duration
         loop = ["-f", "image2", "-loop", "1", "-framerate", "30"] if broll.suffix.lower() in {".jpg", ".jpeg", ".png"} else ["-stream_loop", "-1"]
         base.extend([*loop, "-i", str(broll), "-filter_complex",
-                     f"[0:v]{framing},setsar=1[main];"
+                     graph +
                      f"[1:v]scale={dimensions}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,"
                      f"crop={dimensions},setsar=1[cut];"
                      f"[main][cut]overlay=enable='between(t,{start:.3f},{end:.3f})',ass={subtitle.name}[video]",
                      "-map", "[video]"])
+    elif split_gameplay:
+        base.extend(["-filter_complex", f"{graph}[main]ass={subtitle.name}[video]", "-map", "[video]"])
     else:
         base.extend(["-map", "0:v:0", "-vf", f"{framing},setsar=1,ass={subtitle.name}"])
     audio = []
@@ -205,5 +244,5 @@ def render_format(source, clip, output, options, shape, *, broll=None, tracking=
     base.extend(["-map", "0:a:0", "-t", str(clip.end - clip.start), "-c:v", "libx264", "-preset", "medium",
                  "-crf", "17", "-profile:v", "high", "-pix_fmt", "yuv420p", "-fps_mode", "vfr",
                  "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-y", str(output)])
-    subprocess.run(base, cwd=directory, capture_output=True, check=True, timeout=900)
+    subprocess.run(base, cwd=directory, capture_output=True, check=True, timeout=45 if preview else 900)
     return output

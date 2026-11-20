@@ -31,6 +31,9 @@ def load_projects(root, logger):
             job = data["job"]
             if job["status"] not in {"complete", "error"}:
                 job.update(status="error", message="The server restarted before the job finished.")
+            publishing = job.get("publishing")
+            if publishing and publishing.get("status") in {"queued", "uploading"}:
+                publishing.update(status="error", message="The server restarted before YouTube confirmed the upload. Check YouTube Studio.")
             current = {}
             for index, record in data["clips"].items():
                 source = (manifest.parent / record["source"]).resolve()

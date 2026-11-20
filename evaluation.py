@@ -23,6 +23,7 @@ def score(labels, job):
     if source not in labels["sources"]:
         raise ValueError(f"No labels for YouTube video {source!r}.")
     coverage = job.get("coverage") or []
+    analyzed = job.get("analyzed_coverage")
     candidates = [(clip["start"], clip["end"]) for clip in job.get("candidates_found") or []]
     exports = job["clips"][:5]
     picks = [(clip["start"], clip["end"]) for clip in exports]
@@ -43,7 +44,9 @@ def score(labels, job):
         elif any(covers(interval, anchor) for interval in candidates):
             outcome = "candidate_not_exported"
         elif any(covers(interval, anchor) for interval in coverage):
-            outcome = "scanned_not_detected"
+            outcome = "scanned_not_shortlisted" if analyzed is not None and not any(
+                covers(interval, anchor) for interval in analyzed
+            ) else "scanned_not_detected"
         else:
             outcome = "outside_scan"
         events.append({**label, "outcome": outcome})
@@ -55,6 +58,7 @@ def score(labels, job):
         "coverage_seconds": scanned,
         "coverage_percent": round(100 * scanned / duration, 3) if duration else None,
         "first_clip_seconds": job.get("first_clip_seconds"),
+        "first_preview_seconds": job.get("first_preview_seconds"),
         "exported_clips": len(picks),
         "labeled_moments": len(events),
         "labeled_moments_exported": sum(event["outcome"] == "exported" for event in events),

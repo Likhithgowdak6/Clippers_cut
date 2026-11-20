@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Shortlist Studio</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
-  <script src="{{ url_for('static', filename='studio.js', v='clip-evidence') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='private-youtube-upload') }}" defer></script>
 </head>
 <body class="studio-app">
   {{ navigation('create') }}
@@ -100,13 +100,26 @@
       <small>The headline stays at the top for the entire clip. Timed speech captions appear below.</small>
       </div>
       </details>
+      {% if youtube_enabled %}
+      <div class="check-field">
+        {% if youtube_channel %}
+        <label><input type="checkbox" name="upload_youtube"> Upload the top Short as private to {{ youtube_channel }}</label>
+        <small>Choose this only for footage you have permission to upload.</small>
+        {% else %}
+        <a href="{{ url_for('youtube_connect') }}">Connect YouTube for private uploads</a>
+        {% endif %}
+        {% if youtube_result == 'error' %}<p role="status">YouTube connection failed. You can try connecting again.</p>{% endif %}
+      </div>
+      {% endif %}
       <button type="submit" class="primary-button">Generate Shorts {{ icon("arrow", 18) }}</button>
       <div id="job-progress" class="surface job-progress" hidden>
         <p id="status" role="status"></p>
         <progress id="progress-bar" aria-label="Shorts generation progress" hidden></progress>
         <small id="elapsed" hidden></small>
         <small id="vision-notice" role="status" hidden></small>
-        <a id="view-results" href="#results" hidden>View generated clips</a>
+        <p id="youtube-upload-status" role="status" hidden></p>
+        <a id="youtube-upload-link" target="_blank" rel="noopener" hidden>Open in YouTube Studio</a>
+        <a id="view-results" href="#results" hidden>View results</a>
         <a id="evaluation-export" hidden>Download evaluation data</a>
       </div>
     </form>
@@ -123,6 +136,14 @@
       <p>Full gameplay frame, on-video headline, and timed captions.</p>
     </aside>
     </div>
+    <section id="early-replay-preview" class="surface early-replay-preview" aria-labelledby="early-preview-heading" hidden>
+      <div>
+        <h2 id="early-preview-heading">Early pick</h2>
+        <p id="early-preview-title"></p>
+        <small id="early-preview-status">The scan is still running. Final picks may change.</small>
+      </div>
+      <video id="early-preview-video" controls playsinline preload="metadata" aria-label="Preliminary replay clip"></video>
+    </section>
     <section aria-labelledby="results-heading" id="results" class="result-section" tabindex="-1" hidden>
       <div class="result-heading">
       <h2 id="results-heading">Your Shorts</h2>
@@ -138,6 +159,20 @@
         <small id="batch-status" role="status"></small>
       </form>
       <p id="first-clip-time" hidden></p>
+      <section id="replay-map" class="surface replay-map" aria-labelledby="replay-map-heading" hidden>
+        <h3 id="replay-map-heading">Replay map</h3>
+        <p id="replay-coverage"></p>
+        <div id="replay-tracks" class="replay-tracks" aria-hidden="true"></div>
+        <div class="replay-map-fields">
+          <label>Audience moments <select id="replay-peaks"><option value="">Choose a moment</option></select></label>
+          <label>Replay time <input id="replay-time" type="text" placeholder="14:03:06"></label>
+        </div>
+        <p id="replay-selection" role="status"></p>
+        <div class="clip-actions">
+          <a id="watch-replay-point" target="_blank" rel="noopener" class="secondary-button" hidden>Watch on YouTube</a>
+          <button type="button" id="rescan-replay-point" disabled>Scan around this time</button>
+        </div>
+      </section>
       <div id="clips"></div>
     </section>
   </main>

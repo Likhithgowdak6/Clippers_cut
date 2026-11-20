@@ -2,11 +2,13 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from secrets import token_urlsafe
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
@@ -19,7 +21,7 @@ from zipfile import ZIP_STORED, ZipFile
 import imageio_ffmpeg
 import numpy as np
 import requests
-from flask import Blueprint, Flask, abort, jsonify, render_template, request, send_file, send_from_directory
+from flask import Blueprint, Flask, abort, jsonify, redirect, render_template, request, send_file, send_from_directory
 
 from clipping import Clip, Segment, caption_cues, rank_clips, rank_gameplay, same_gameplay_moment
 from audience import collect_reactions
@@ -32,6 +34,7 @@ from race_hud import inspect_hud, placement_headline, scan_hud_changes
 from replay_import import download_replay_window, prepare_replay
 from yt_dlp.utils import DownloadError
 from vision import review_event
+import youtube_publish
 
 app = Flask(__name__)
 review_pages = Blueprint("review_pages", __name__)
@@ -42,6 +45,8 @@ workspace.mkdir(parents=True, exist_ok=True)
 jobs, projects, edits, review_notes = load_projects(workspace, app.logger)
 lock = Lock()
 worker = ThreadPoolExecutor(max_workers=1)
+publish_worker = ThreadPoolExecutor(max_workers=1)
+youtube_states = {}
 model = None
 
 
@@ -412,7 +417,34 @@ def import_scout_window(video_id, folder, start, size, prepared=None):
     return import_youtube(video_id, folder, start, size)
 
 
-def search_replay(job_id, directory, video_id, language, depth, clip_count=5):
+def analyze_scout(window, language, clip_count):
+    _, source, offset, signals, audience = window
+    audience_pick = next((point for point in audience if point[1] >= 3), None)
+    clips = analyze(source, language, stream=True, signals=signals, clip_count=clip_count,
+                    audience_time=audience_pick[0] - offset if audience_pick else None)
+    matches = []
+    for clip, signature in clips:
+        reaction = next((point for point in audience if clip.start <= point[0] - offset < clip.end), None)
+        if reaction:
+            reaction_time, count, channel = reaction
+            clip = replace(clip, score=clip.score + .65,
+                           audience={"time": reaction_time, "count": count, "channel": channel})
+        matches.append((source, offset, clip, signature))
+    return matches
+
+
+def choose_scout_windows(overall, audience, sustained, limit):
+    picks = {}
+    quota = max(1, limit // 3)
+    for pool in (audience[:quota], sustained[:quota], overall):
+        for window in pool:
+            picks.setdefault(window[2], window)
+            if len(picks) == limit:
+                return list(picks.values())
+    return list(picks.values())
+
+
+def search_replay(job_id, directory, video_id, language, depth, clip_count=5, early_preview=None):
     update(job_id, status="importing", message="Finding scan windows across the replay.")
     metadata = subprocess.run(
         [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist",
@@ -476,6 +508,10 @@ def search_replay(job_id, directory, video_id, language, depth, clip_count=5):
            message=f"Scanning replay windows (0 of {len(windows)} checked).")
     shortlisted = []
     window_limit = max(SCAN_PLANS[depth][2], (clip_count + 1) // 2)
+    evidence_limit = max(1, window_limit // 3)
+    audience_windows, action_windows = [], []
+    early_analysis = {}
+    early_window = None
     coverage = []
     completed = 0
     scanned = 0
@@ -506,31 +542,50 @@ def search_replay(job_id, directory, video_id, language, depth, clip_count=5):
                 end = offset + len(signals[0]) / 16000
                 coverage.append((offset, min(end, duration)))
                 audience = [point for point in reactions if offset <= point[0] < end]
-                shortlisted.append((scout_score(signals) + (.5 if audience else 0), source, offset, signals, audience))
+                window = (scout_score(signals) + (.5 if audience else 0), source, offset, signals, audience)
+                shortlisted.append(window)
                 shortlisted.sort(key=lambda item: (-item[0], item[2]))
                 del shortlisted[window_limit:]
+                if audience and depth in {"deep", "wide"}:
+                    audience_windows.append(window)
+                    audience_windows.sort(key=lambda item: (-max(point[1] for point in item[4]), -item[0], item[2]))
+                    del audience_windows[evidence_limit:]
+                if signals[3] and depth in {"deep", "wide"}:
+                    action_windows.append(window)
+                    action_windows.sort(key=lambda item: (-max(strength for _, strength in item[3][3]), -item[0], item[2]))
+                    del action_windows[evidence_limit:]
             completed += 1
             minutes = covered_seconds(coverage) / 60
             update(job_id, status="scanning", scanned=completed, windows=len(windows), scan_checkpoint=list(checkpoint),
                    reused_windows=reused, coverage=sorted(coverage),
                    message=f"Checked {completed} of {len(windows)} windows. Scanned {minutes:.1f} minutes of footage.")
+            if early_preview and len(windows) > 4 and completed < len(windows) and scanned >= 3:
+                early = shortlisted[0]
+                try:
+                    early_matches = analyze_scout(early, language, clip_count)
+                    early_analysis[early[1]] = early_matches
+                    early_window = early
+                    if early_matches:
+                        early_preview(max(early_matches, key=gameplay_rank))
+                except Exception:
+                    app.logger.warning("Could not render an early replay preview", exc_info=True)
+                early_preview = None
     update(job_id, scanned=scanned, windows=len(windows), coverage=sorted(coverage),
            source_seconds=replay["duration"])
     if not scanned:
         raise ValueError("None of the selected replay windows could be read.")
     matches = []
-    for index, (_, source, offset, signals, audience) in enumerate(shortlisted, 1):
-        update(job_id, status="transcribing", message=f"Transcribing shortlisted window {index} of {len(shortlisted)}.")
-        audience_pick = next((point for point in audience if point[1] >= 3), None)
-        clips = analyze(source, language, stream=True, signals=signals, clip_count=clip_count,
-                        audience_time=audience_pick[0] - offset if audience_pick else None)
-        for clip, signature in clips:
-            reaction = next((point for point in audience if clip.start <= point[0] - offset < clip.end), None)
-            if reaction:
-                reaction_time, count, channel = reaction
-                clip = replace(clip, score=clip.score + .65,
-                               audience={"time": reaction_time, "count": count, "channel": channel})
-            matches.append((source, offset, clip, signature))
+    analyzed_coverage = []
+    update(job_id, analyzed_coverage=[])
+    chosen_windows = choose_scout_windows(shortlisted, audience_windows, action_windows, window_limit)
+    if early_window and not any(window[1] == early_window[1] for window in chosen_windows):
+        chosen_windows.insert(0, early_window)
+    for index, window in enumerate(chosen_windows, 1):
+        _, source, offset, signals, _ = window
+        update(job_id, status="transcribing", message=f"Transcribing shortlisted window {index} of {len(chosen_windows)}.")
+        matches.extend(early_analysis[source] if source in early_analysis else analyze_scout(window, language, clip_count))
+        analyzed_coverage.append((offset, min(duration, offset + len(signals[0]) / 16000)))
+        update(job_id, analyzed_coverage=sorted(analyzed_coverage))
     update(job_id, candidates_found=[
         {"start": offset + clip.start, "end": offset + clip.end}
         for _, offset, clip, _ in matches
@@ -692,6 +747,17 @@ def render(source: Path, clip: Clip, index: int, stream=False):
     return output
 
 
+def publish_early_preview(job_id, directory, match, hook, started_at):
+    source, offset, clip = gameplay_titles([match[:3]])[0]
+    clip = replace(clip, hook=hook or clip.hook)
+    output = directory / "early-preview.mp4"
+    render_format(source, clip, output, ExportOptions(framing="fit"), "vertical", preview=True)
+    update(job_id, first_preview_seconds=round(monotonic() - started_at, 1), early_preview={
+        "title": hook or clip.title, "start": offset + clip.start, "end": offset + clip.end,
+        "preview": f"/jobs/{job_id}/clips/{output.name}",
+    })
+
+
 def track_faces(source, clip, directory, options):
     if options.framing != "smart":
         return None
@@ -737,8 +803,25 @@ def render_edit(edit_id, job_id, source, clip, options, broll, directory, stock_
             broll.unlink(missing_ok=True)
 
 
+def publish_top_clip(job_id, directory, channel_id, clip, video_id):
+    update(job_id, publishing={"status": "uploading", "message": "Uploading the top Short to YouTube as private."})
+    try:
+        uploaded, existing = youtube_publish.upload_private(
+            workspace, youtube_publish.config(), channel_id, directory / "clip-1.mp4", clip, video_id
+        )
+    except ValueError as error:
+        update(job_id, publishing={"status": "error", "message": str(error)})
+    except (requests.RequestException, OSError, KeyError, TypeError, sqlite3.Error) as error:
+        app.logger.warning("Private YouTube upload failed (%s)", type(error).__name__)
+        update(job_id, publishing={"status": "error", "message": "YouTube upload could not be confirmed. Check YouTube Studio."})
+    else:
+        message = "This Short was already uploaded." if existing else "The top Short was uploaded as private."
+        update(job_id, publishing={"status": "complete", "message": message,
+                                  "url": f"https://studio.youtube.com/video/{uploaded}/edit"})
+
+
 def process(job_id, source, stream, language, hook, video_id=None, scan_start=None, visual_ai=True, depth="balanced",
-            clip_count=5, clip_length=60, recording=None, vision_provider="local"):
+            clip_count=5, clip_length=60, recording=None, vision_provider="local", publish_channel=None):
     started_at = monotonic()
     directory = source.parent
     scouting = None
@@ -762,7 +845,10 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
             scouting = directory / "replay-scan"
             scouting.mkdir()
             try:
-                matches = search_replay(job_id, scouting, video_id, language, depth, clip_count)
+                preview = None
+                if depth in {"deep", "wide"}:
+                    preview = lambda match: publish_early_preview(job_id, directory, match, hook, started_at)
+                matches = search_replay(job_id, scouting, video_id, language, depth, clip_count, early_preview=preview)
             except (subprocess.SubprocessError, ValueError, OSError):
                 update(job_id, status="error", message="Could not scan this replay. Check that it plays publicly or enter a specific start time.")
                 return
@@ -861,7 +947,12 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
             message += f" Scanned {minutes:.1f} minutes of footage."
             if jobs[job_id].get("reused_windows"):
                 message += f" Reused {jobs[job_id]['reused_windows']} saved windows."
-        update(job_id, status="complete", message=message)
+        if publish_channel:
+            update(job_id, status="complete", message=message,
+                   publishing={"status": "queued", "message": "Private YouTube upload queued."})
+            publish_worker.submit(publish_top_clip, job_id, directory, publish_channel, results[0], video_id)
+        else:
+            update(job_id, status="complete", message=message)
     except Exception:
         app.logger.exception("Clip job failed")
         update(job_id, status="error", message="Processing stopped. Check the server log for model or media errors.")
@@ -881,7 +972,53 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
 
 @app.get("/")
 def index():
-    return render_template("index.html", cloud_vision_enabled=bool(cloud_vision_key()))
+    settings = youtube_publish.config()
+    account = youtube_publish.connection(workspace) if settings else None
+    return render_template("index.html", cloud_vision_enabled=bool(cloud_vision_key()), youtube_enabled=bool(settings),
+                           youtube_channel=account["title"] if account and account["client_id"] == settings[0] else None,
+                           youtube_result=request.args.get("youtube_connect"))
+
+
+@app.get("/youtube/connect")
+def youtube_connect():
+    settings = youtube_publish.config()
+    if not settings:
+        abort(404)
+    if request.host_url.rstrip("/") != settings[2].removesuffix("/youtube/callback"):
+        abort(400, "Open Shortlist at the origin configured for YouTube OAuth.")
+    state = token_urlsafe(32)
+    with lock:
+        now = monotonic()
+        expired = [token for token, expires in youtube_states.items() if expires < now]
+        for token in expired:
+            youtube_states.pop(token, None)
+        youtube_states[state] = now + 600
+    response = redirect(youtube_publish.authorization_url(settings, state))
+    response.set_cookie("shortlist_youtube_state", state, max_age=600, httponly=True, samesite="Lax", path="/youtube")
+    return response
+
+
+@app.get("/youtube/callback")
+def youtube_callback():
+    settings = youtube_publish.config()
+    state = request.args.get("state", "")
+    if not settings or not state or request.cookies.get("shortlist_youtube_state") != state:
+        abort(400, "Start the YouTube connection from Shortlist.")
+    with lock:
+        expires = youtube_states.pop(state, 0)
+    if expires < monotonic():
+        abort(400, "The YouTube connection attempt expired.")
+    code = request.args.get("code")
+    outcome = "error"
+    if code:
+        try:
+            youtube_publish.connect(workspace, settings, code)
+            outcome = "connected"
+        except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as error:
+            app.logger.warning("YouTube channel connection failed (%s)", type(error).__name__)
+    response = redirect(f"/?youtube_connect={outcome}", code=303)
+    response.delete_cookie("shortlist_youtube_state", path="/youtube")
+    return response
 
 
 @app.get("/example-output")
@@ -892,7 +1029,9 @@ def example_output():
 @app.get("/library")
 def library():
     with lock:
-        entries = [(job_id, job) for job_id, job in jobs.items() if job.get("clips")]
+        entries = [(job_id, job) for job_id, job in jobs.items()
+                   if job.get("clips") or job.get("source_seconds") and job.get("video_id")
+                   and job.get("status") in {"complete", "error"}]
     entries.reverse()
     return render_template("library.html", entries=entries)
 
@@ -965,6 +1104,15 @@ def create_job():
         return jsonify(error="Choose a supported visual AI provider."), 400
     if mode == "stream" and visual_ai and vision_provider == "cloud" and not cloud_vision_key():
         return jsonify(error="Set SHORTLIST_GEMINI_API_KEY on the server to enable Gemini review."), 400
+    publish_channel = None
+    if request.form.get("upload_youtube") == "on":
+        settings = youtube_publish.config()
+        if not settings or request.headers.get("Origin") != settings[2].removesuffix("/youtube/callback"):
+            return jsonify(error="Start the private upload from the Shortlist page configured for YouTube."), 403
+        account = youtube_publish.connection(workspace)
+        if not account or account["client_id"] != settings[0]:
+            return jsonify(error="Connect your YouTube channel first."), 400
+        publish_channel = account["channel_id"]
     job_id = uuid4().hex
     directory = workspace / job_id
     directory.mkdir()
@@ -974,7 +1122,7 @@ def create_job():
     source_name = Path(source_file.filename).name if source_file else f"{recording[0]} recording" if recording else ""
     update(job_id, status="queued", message="Waiting to process video.", clips=[], video_id=video_id, source_name=source_name)
     worker.submit(process, job_id, source, mode == "stream", language or None, hook, video_id,
-                  scan_start, visual_ai, depth, clip_count, clip_length, recording, vision_provider)
+                  scan_start, visual_ai, depth, clip_count, clip_length, recording, vision_provider, publish_channel)
     return jsonify(id=job_id), 202
 
 
@@ -1000,8 +1148,8 @@ def evaluation_manifest(job_id):
         abort(404)
     if job["status"] not in {"complete", "error"}:
         return jsonify(error="Wait for the job to finish."), 409
-    manifest = {key: job.get(key) for key in ("video_id", "coverage", "candidates_found",
-                                               "source_seconds", "first_clip_seconds", "clips", "status")}
+    manifest = {key: job.get(key) for key in ("video_id", "coverage", "analyzed_coverage", "candidates_found",
+                                               "source_seconds", "first_preview_seconds", "first_clip_seconds", "clips", "status")}
     response = jsonify(manifest)
     response.headers["Content-Disposition"] = 'attachment; filename="shortlist-evaluation.json"'
     return response
@@ -1011,7 +1159,10 @@ def evaluation_manifest(job_id):
 def clip_file(job_id, filename):
     with lock:
         job = jobs.get(job_id)
-    if job is None or not any(clip["preview"].endswith("/" + filename) for clip in job["clips"]):
+    if job is None or not (
+        any(clip["preview"].endswith("/" + filename) for clip in job["clips"])
+        or filename == "early-preview.mp4" and job.get("early_preview")
+    ):
         abort(404)
     return send_from_directory(workspace / job_id, filename, as_attachment="download" in request.args)
 
@@ -1066,6 +1217,55 @@ def edit_status(job_id, edit_id):
         if not edit or edit["job"] != job_id:
             abort(404)
         return jsonify(edit)
+
+
+@app.post("/jobs/<job_id>/editor/<int:index>/layout-preview")
+def layout_preview(job_id, index):
+    with lock:
+        project = projects.get((job_id, index))
+    if project is None:
+        abort(404)
+    source, clip, _ = project
+    try:
+        edited, options = parse_edit(clip, request.get_json())
+    except (ValueError, TypeError, AttributeError) as error:
+        return jsonify(error=str(error)), 400
+    edited = replace(edited, end=min(edited.start + 4, edited.end))
+    try:
+        with TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            output = directory / "preview.mp4"
+            tracking = track_faces(source, edited, directory, options)
+            render_format(source, edited, output, options, "vertical", tracking=tracking, preview=True)
+            media = BytesIO(output.read_bytes())
+    except (OSError, subprocess.SubprocessError):
+        app.logger.warning("Could not render layout preview", exc_info=True)
+        return jsonify(error="Could not render the preview. Check the crop and try again."), 500
+    return send_file(media, mimetype="video/mp4", max_age=0)
+
+
+@app.get("/jobs/<job_id>/editor/<int:index>/crop-frame")
+def crop_frame(job_id, index):
+    with lock:
+        project = projects.get((job_id, index))
+    if project is None:
+        abort(404)
+    source, clip, _ = project
+    offset = request.args.get("at", default=0.0, type=float)
+    if not 0 <= offset < clip.end - clip.start:
+        abort(400)
+    try:
+        frame = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(clip.start + offset),
+             "-i", str(source), "-map", "0:v:0", "-frames:v", "1",
+             "-vf", "scale='min(iw,960)':-2", "-c:v", "mjpeg", "-threads", "1", "-f", "image2pipe", "pipe:1"],
+            capture_output=True, check=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        abort(422)
+    if not frame:
+        abort(422)
+    return send_file(BytesIO(frame), mimetype="image/jpeg", max_age=0)
 
 
 @app.route("/jobs/<job_id>/editor/<int:index>/notes", methods=["GET", "POST"])

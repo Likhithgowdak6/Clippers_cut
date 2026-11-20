@@ -134,15 +134,213 @@ project.cues.forEach((cue, index) => {
 });
 if (!inputs.length) field("cues").textContent = "No speech captions were detected in this clip.";
 
-const presetFields = ["style", "brand", "color"];
+const captionPreview = field("caption-style-preview");
+const captionSample = field("caption-style-sample");
+function updateCaptionPreview() {
+  captionPreview.dataset.style = field("style").value;
+  captionPreview.dataset.font = field("caption-font").value;
+  captionPreview.style.setProperty("--caption-accent", field("color").value);
+  captionSample.textContent = (inputs[0]?.value.trim() || "Caption preview").slice(0, 80);
+}
+
+for (const name of ["style", "caption-font", "color"]) {
+  field(name).addEventListener("input", updateCaptionPreview);
+}
+inputs[0]?.addEventListener("input", updateCaptionPreview);
+updateCaptionPreview();
+
+const presetFields = ["style", "caption-font", "brand", "color"];
 field("save-preset").addEventListener("click", () => {
   localStorage.setItem("shortlist-brand", JSON.stringify(Object.fromEntries(presetFields.map((name) => [name, field(name).value]))));
   feedback.textContent = "Brand preset saved in this browser.";
 });
 field("load-preset").addEventListener("click", () => {
   const preset = JSON.parse(localStorage.getItem("shortlist-brand") || "null");
-  if (preset) presetFields.forEach((name) => { field(name).value = preset[name]; });
+  if (preset) {
+    presetFields.forEach((name) => {
+      if (typeof preset[name] === "string") field(name).value = preset[name];
+    });
+    updateCaptionPreview();
+  }
   feedback.textContent = preset ? "Brand preset loaded." : "No brand preset saved yet.";
+});
+
+const facecamFields = ["facecam-x", "facecam-y", "facecam-width", "facecam-height"];
+const cropSource = field("facecam-source");
+const cropFrame = new Image();
+cropFrame.alt = "Original video frame";
+cropSource.prepend(cropFrame);
+const cropBox = field("facecam-box");
+const cropStatus = field("facecam-status");
+const cropPresets = field("crop-presets");
+const cropValues = () => facecamFields.map((name) => field(name).valueAsNumber);
+const validCrop = ([x, y, width, height]) =>
+  x >= 0 && y >= 0 && width >= 5 && height >= 5 && x + width <= 100.000001 && y + height <= 100.000001;
+let frameOffset = null;
+
+function drawFacecamBox() {
+  const values = cropValues();
+  cropBox.hidden = !validCrop(values);
+  if (!cropBox.hidden) {
+    for (const [index, property] of ["left", "top", "width", "height"].entries()) {
+      cropBox.style[property] = `${values[index]}%`;
+    }
+  }
+}
+
+function setCrop(values) {
+  facecamFields.forEach((name, index) => { field(name).value = Math.round(values[index] * 10) / 10; });
+  drawFacecamBox();
+}
+
+function loadCropFrame() {
+  const offset = field("start").valueAsNumber;
+  if (!Number.isFinite(offset) || offset < 0 || offset >= project.duration || offset === frameOffset) return;
+  frameOffset = offset;
+  cropSource.hidden = true;
+  cropStatus.textContent = "Loading original frame…";
+  cropFrame.src = `${location.pathname}/crop-frame?at=${offset}`;
+}
+
+cropFrame.addEventListener("load", () => {
+  cropSource.hidden = false;
+  cropStatus.textContent = "";
+  drawFacecamBox();
+});
+cropFrame.addEventListener("error", () => {
+  frameOffset = null;
+  cropStatus.textContent = "Could not load the original frame. Exact crop values are still available.";
+});
+
+let cropDrag = null;
+cropBox.addEventListener("pointerdown", (event) => {
+  if (!event.isPrimary || event.button !== 0) return;
+  event.preventDefault();
+  cropBox.setPointerCapture(event.pointerId);
+  cropDrag = {pointer: event.pointerId, x: event.clientX, y: event.clientY, values: cropValues(),
+    resize: event.target.hasAttribute("data-resize"), bounds: cropSource.getBoundingClientRect()};
+});
+cropBox.addEventListener("pointermove", (event) => {
+  if (cropDrag?.pointer !== event.pointerId) return;
+  const [x, y, width, height] = cropDrag.values;
+  const deltaX = (event.clientX - cropDrag.x) * 100 / cropDrag.bounds.width;
+  const deltaY = (event.clientY - cropDrag.y) * 100 / cropDrag.bounds.height;
+  const within = (value, min, max) => Math.min(max, Math.max(min, value));
+  setCrop(cropDrag.resize
+    ? [x, y, within(width + deltaX, 5, 100 - x), within(height + deltaY, 5, 100 - y)]
+    : [within(x + deltaX, 0, 100 - width), within(y + deltaY, 0, 100 - height), width, height]);
+});
+cropBox.addEventListener("lostpointercapture", () => {
+  cropDrag = null;
+  cropStatus.textContent = "Crop updated. Render the preview to check it.";
+});
+for (const name of facecamFields) field(name).addEventListener("input", drawFacecamBox);
+
+let namedCrops = new Map();
+try {
+  namedCrops = new Map(JSON.parse(localStorage.getItem("shortlist-facecam-crops") || "[]"));
+} catch {
+  // The crop editor can still be used when local storage is unavailable.
+}
+function refreshCropPresets() {
+  cropPresets.replaceChildren(new Option("Choose a saved crop", ""));
+  for (const name of namedCrops.keys()) cropPresets.add(new Option(name, name));
+}
+refreshCropPresets();
+field("save-crop-preset").addEventListener("click", () => {
+  const name = field("crop-preset-name").value.trim();
+  const values = cropValues();
+  if (!name || !validCrop(values)) {
+    cropStatus.textContent = "Enter a preset name and keep the crop inside the frame.";
+    return;
+  }
+  const next = new Map(namedCrops).set(name, values);
+  try {
+    localStorage.setItem("shortlist-facecam-crops", JSON.stringify([...next]));
+    namedCrops = next;
+    refreshCropPresets();
+    cropPresets.value = name;
+    cropStatus.textContent = `Saved “${name}” in this browser.`;
+  } catch {
+    cropStatus.textContent = "This browser could not save the crop.";
+  }
+});
+cropPresets.addEventListener("change", () => {
+  const values = namedCrops.get(cropPresets.value);
+  if (!Array.isArray(values) || !validCrop(values)) return;
+  setCrop(values);
+  field("crop-preset-name").value = cropPresets.value;
+  cropStatus.textContent = "Crop loaded. Render the preview to check it.";
+});
+
+function updateFramingControls() {
+  const split = field("framing").value === "gameplay";
+  field("facecam-crop").hidden = !split;
+  for (const name of facecamFields) field(name).disabled = !split;
+  if (split) loadCropFrame();
+}
+field("framing").addEventListener("change", updateFramingControls);
+field("start").addEventListener("change", () => {
+  if (field("framing").value === "gameplay") loadCropFrame();
+});
+updateFramingControls();
+
+function appearanceSettings() {
+  return {
+    framing: field("framing").value,
+    style: field("style").value,
+    caption_font: field("caption-font").value,
+    word_highlight: field("word-highlight").checked,
+    brand: field("brand").value,
+    color: field("color").value,
+    ...Object.fromEntries(facecamFields.map((name) => [name.replace("-", "_"), field(name).valueAsNumber]))
+  };
+}
+
+const layoutStage = field("layout-preview-stage");
+const layoutVideo = field("layout-preview-video");
+const layoutStatus = field("layout-preview-status");
+field("preview-guides").addEventListener("change", (event) => {
+  layoutStage.classList.toggle("show-guides", event.target.checked);
+});
+field("render-layout-preview").addEventListener("click", async (event) => {
+  if (!field("start").reportValidity() || !field("end").reportValidity()
+      || facecamFields.some((name) => !field(name).reportValidity())) return;
+  if (field("framing").value === "gameplay") {
+    if (!validCrop(cropValues())) {
+      layoutStatus.textContent = "Keep the facecam crop inside the original frame.";
+      return;
+    }
+    loadCropFrame();
+  }
+  const button = event.currentTarget;
+  button.disabled = true;
+  layoutStatus.textContent = "Rendering vertical preview…";
+  try {
+    const response = await fetch(`${location.pathname}/layout-preview`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        ...appearanceSettings(),
+        headline: field("headline").value,
+        start: field("start").valueAsNumber,
+        end: field("end").valueAsNumber,
+        captions: inputs.map((input) => input.value)
+      })
+    });
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(failure.error || "Could not render the vertical preview.");
+    }
+    if (layoutVideo.src.startsWith("blob:")) URL.revokeObjectURL(layoutVideo.src);
+    layoutVideo.src = URL.createObjectURL(await response.blob());
+    layoutStage.hidden = false;
+    layoutStatus.textContent = "Preview ready. Play it to check your layout.";
+  } catch (error) {
+    layoutStatus.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 field("stock-caption").addEventListener("click", () => {
@@ -213,10 +411,7 @@ form.addEventListener("submit", async (event) => {
     captions: inputs.map((input) => input.value),
     omit: omissions.flatMap((box, index) => box.checked ? [index] : []),
     formats: Array.from(form.querySelectorAll("[name=shape]:checked"), (input) => input.value),
-    framing: field("framing").value,
-    style: field("style").value,
-    brand: field("brand").value,
-    color: field("color").value,
+    ...appearanceSettings(),
     stock_id: chosenStock,
     broll_keyword: hasBroll ? field("broll-keyword").value : "",
     broll_start: hasBroll ? Number(field("broll-start").value) : 0,

@@ -79,6 +79,8 @@ Wide mode plans up to 120 non-overlapping one-minute windows. In a plan generate
 
 The selected window downloaded and decoded successfully. Initially, earlier changes filled all five candidate slots. After ranking HUD changes by repeated evidence around the event, the detector retained the labeled 5/14-to-6/14 change among the five candidates for that window. This check did not run final ranking across all 120 windows or compare exports with vendor results.
 
+A later full Wide run exported the police-van maneuver. It decoded footage covering the bike position change and the pursuit, but neither reached the recorded candidate set. The bike replay covered 118 minutes of 23h 46m, and the first clip arrived in about 60 minutes. Those historical jobs did not retain the exact intervals shortlisted for detailed analysis. New jobs record that stage separately for the replay map and evaluation.
+
 ## GitHub clipping projects
 
 This review compares repository documentation and implementation descriptions. Quality and speed claims need a run on the same footage before they can be used as benchmarks.

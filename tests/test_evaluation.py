@@ -14,6 +14,24 @@ from vision import event_frames, review_event, visual_headline
 
 
 class EvaluationTest(unittest.TestCase):
+    def test_shortlist_keeps_audience_and_sustained_windows_over_motion_only(self):
+        overall = [(8, None, 0, None, None), (7, None, 60, None, None), (6, None, 120, None, None)]
+        audience = [(2, None, 180, None, None)]
+        sustained = [(1, None, 240, None, None)]
+        selected = app.choose_scout_windows(overall, audience, sustained, 3)
+        self.assertEqual([window[2] for window in selected], [180, 240, 0])
+        self.assertEqual(len(app.choose_scout_windows(overall, overall[:1], overall[:1], 3)), 3)
+
+    def test_evaluation_distinguishes_scouted_and_analyzed_intervals(self):
+        labels = {"sources": {"sample": [
+            {"start": 10, "end": 12, "category": "pursuit"},
+            {"start": 30, "end": 32, "category": "pursuit"},
+        ]}}
+        job = {"video_id": "sample", "coverage": [[0, 40]], "analyzed_coverage": [[20, 40]], "clips": []}
+        result = score(labels, job)
+        self.assertEqual([event["outcome"] for event in result["events"]],
+                         ["scanned_not_shortlisted", "scanned_not_detected"])
+
     def test_scene_cut_filter_distinguishes_shot_change_and_movement(self):
         frames = np.zeros((12, 8, 8), dtype=np.uint8)
         frames[5:, :, :4] = 180

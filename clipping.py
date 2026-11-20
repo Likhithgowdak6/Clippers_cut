@@ -1,3 +1,4 @@
+import os
 import re
 from dataclasses import dataclass
 
@@ -176,31 +177,46 @@ def ass_text(value):
 
 
 def caption_cues(clip):
+    return [(start, end, phrase) for start, end, phrase, _ in timed_caption_cues(clip)]
+
+
+def timed_caption_cues(clip):
     cues = []
     for segment in clip.segments:
         groups = [segment.words[i:i + 5] for i in range(0, len(segment.words), 5)]
-        words = [(group[0][0], group[-1][1], "".join(word[2] for word in group).strip()) for group in groups]
-        for start, end, phrase in words or [(segment.start, segment.end, segment.text)]:
+        words = [(group[0][0], group[-1][1], "".join(word[2] for word in group).strip(), group) for group in groups]
+        for start, end, phrase, group in words or [(segment.start, segment.end, segment.text, ())]:
             start = max(start, clip.start)
             end = min(end, clip.end)
             if end > start and phrase:
-                cues.append((start, end, phrase))
+                cues.append((start, end, phrase, group))
     return cues
 
 
-def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF82"):
+CAPTION_FONTS = {"sans": "Arial", "serif": "Georgia" if os.name == "nt" else "Noto Serif", "mono": "Courier New"}
+CAPTION_STYLES = {"bold", "minimal", "accent", "neon", "candy"}
+
+
+def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF82", font="sans",
+             word_highlight=False):
     scale = min(width, height) / 1080
     font_size = round((67 if style != "minimal" else 52) * scale)
     hook_color = color[4:6] + color[2:4] + color[0:2]
-    primary = f"&H00{hook_color}" if style == "accent" else "&H00FFFFFF"
+    primary = f"&H00{hook_color}" if style == "accent" and not word_highlight else "&H00FFFFFF"
+    outline, border, stroke, shadow = "&H00090909", 1, 5, 1
+    if style == "neon":
+        primary, outline, stroke, shadow = "&H00D9FF54", "&H00321A0B", 7, 3
+    elif style == "candy":
+        primary, outline, border, stroke, shadow = "&H00FFFFFF", "&H002C174E", 3, 9, 0
+    family = CAPTION_FONTS[font]
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,"
         "Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
         "Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,Arial,{font_size},{primary},&H00FFFFFF,&H00090909,&H96000000,"
-        f"-1,0,0,0,100,100,0,0,1,5,1,2,{width//13},{width//13},{height*15//100},1",
+        f"Style: Default,{family},{font_size},{primary},&H00FFFFFF,{outline},{outline if border == 3 else '&H96000000'},"
+        f"-1,0,0,0,100,100,0,0,{border},{stroke},{shadow},2,{width//13},{width//13},{height*15//100},1",
         f"Style: Hook,Arial,{round(78*scale)},&H00{hook_color},&H00FFFFFF,&H00090909,&H96000000,"
         f"-1,0,0,0,100,100,0,0,1,6,1,8,{width//10},{width//10},{height//8},1",
         f"Style: Brand,Arial,{round(34*scale)},&H00{hook_color},&H00FFFFFF,&H00090909,&H96000000,"
@@ -211,9 +227,24 @@ def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF8
         lines.append(f"Dialogue: 1,0:00:00.00,{ass_time(clip.end - clip.start)},Hook,,0,0,0,,{ass_text(clip.hook)}")
     if brand:
         lines.append(f"Dialogue: 2,0:00:00.00,{ass_time(clip.end - clip.start)},Brand,,0,0,0,,{ass_text(brand)}")
-    for start, end, phrase in caption_cues(clip):
-        lines.append(
-            f"Dialogue: 0,{ass_time(start - clip.start)},{ass_time(end - clip.start)},"
-            f"Default,,0,0,0,,{ass_text(phrase)}"
-        )
+    def dialogue(start, end, text):
+        return (f"Dialogue: 0,{ass_time(start - clip.start)},{ass_time(end - clip.start)},"
+                f"Default,,0,0,0,,{text}")
+
+    for start, end, phrase, words in timed_caption_cues(clip):
+        visible = [(max(start, a), min(end, b), text) for a, b, text in words if b > start and a < end]
+        if not word_highlight or not visible:
+            lines.append(dialogue(start, end, ass_text(phrase)))
+            continue
+        text_words = [item[2] for item in visible]
+        text_words[0] = text_words[0].lstrip()
+        text_words[-1] = text_words[-1].rstrip()
+        for index, (begin, _, _) in enumerate(visible):
+            finish = visible[index + 1][0] if index + 1 < len(visible) else end
+            if finish <= begin:
+                continue
+            before = ass_text("".join(text_words[:index]))
+            after = ass_text("".join(text_words[index + 1:]))
+            highlighted = f"{before}{{\\1c&H{hook_color}&}}{ass_text(text_words[index])}{{\\r}}{after}"
+            lines.append(dialogue(begin, finish, highlighted))
     return "\n".join(lines) + "\n"
