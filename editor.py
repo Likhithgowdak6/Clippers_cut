@@ -116,8 +116,8 @@ def join_passages(source, output, ranges):
     subprocess.run(
         [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(origin), "-i", str(source),
          "-t", str(sum(end - start for start, end in ranges)), "-filter_complex", ";".join(filters),
-         "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16",
-         "-c:a", "aac", "-y", str(output)], check=True, capture_output=True, timeout=180,
+         "-map", "[v]", "-map", "[a]", "-c:v", "ffv1", "-level", "3", "-fps_mode", "passthrough",
+         "-c:a", "pcm_f32le", "-f", "matroska", "-y", str(output)], check=True, capture_output=True, timeout=900,
     )
     return output
 
@@ -176,18 +176,18 @@ def render_format(source, clip, output, options, shape, *, broll=None, tracking=
     subtitle.write_text(captions(clip, width, height, options.style, options.brand, options.color), encoding="utf-8")
     dimensions = f"{width}:{height}"
     if options.framing == "fit":
-        framing = (f"scale={dimensions}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        framing = (f"scale={dimensions}:flags=lanczos:force_original_aspect_ratio=decrease:force_divisible_by=2,"
                    f"pad={dimensions}:(ow-iw)/2:(oh-ih)/2:0x151515")
     else:
         send, crop = tracking or ("", "crop")
-        framing = f"scale={dimensions}:force_original_aspect_ratio=increase:force_divisible_by=2,{send}{crop}={dimensions}"
+        framing = f"scale={dimensions}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,{send}{crop}={dimensions}"
     base = [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(clip.start), "-i", str(source)]
     if broll:
         start, end = options.broll_start, options.broll_start + options.broll_duration
         loop = ["-f", "image2", "-loop", "1", "-framerate", "30"] if broll.suffix.lower() in {".jpg", ".jpeg", ".png"} else ["-stream_loop", "-1"]
         base.extend([*loop, "-i", str(broll), "-filter_complex",
                      f"[0:v]{framing},setsar=1[main];"
-                     f"[1:v]scale={dimensions}:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                     f"[1:v]scale={dimensions}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,"
                      f"crop={dimensions},setsar=1[cut];"
                      f"[main][cut]overlay=enable='between(t,{start:.3f},{end:.3f})',ass={subtitle.name}[video]",
                      "-map", "[video]"])
@@ -202,7 +202,8 @@ def render_format(source, clip, output, options, shape, *, broll=None, tracking=
         audio.append("loudnorm=I=-16:TP=-1.5:LRA=11")
     if audio:
         base.extend(["-af", ",".join(audio)])
-    base.extend(["-map", "0:a:0", "-t", str(clip.end - clip.start), "-c:v", "libx264", "-preset", "veryfast",
-                 "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", "-y", str(output)])
+    base.extend(["-map", "0:a:0", "-t", str(clip.end - clip.start), "-c:v", "libx264", "-preset", "medium",
+                 "-crf", "17", "-profile:v", "high", "-pix_fmt", "yuv420p", "-fps_mode", "vfr",
+                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-y", str(output)])
     subprocess.run(base, cwd=directory, capture_output=True, check=True, timeout=900)
     return output
