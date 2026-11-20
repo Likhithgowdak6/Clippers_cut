@@ -1,5 +1,6 @@
 {
   "video_id": "qSyo5d-dVzA",
+  "label_note": "Historical scan report using the superseded bike timestamp. Use gameplay-labels.json for the corrected event at 14:03:06.",
   "coverage_seconds": 439.83,
   "coverage_percent": 0.514,
   "first_clip_seconds": 200.0,

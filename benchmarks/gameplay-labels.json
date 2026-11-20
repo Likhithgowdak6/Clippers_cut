@@ -8,16 +8,17 @@
         "note": "Face-camera commentary in the previously generated short. No gameplay action is visible in the reviewed interval."
       },
       {
-        "start": 50435,
-        "end": 50437,
+        "start": 50583,
+        "end": 50585,
         "category": "ordinary",
-        "note": "Early riding. The HUD repeatedly read 5/14 near the start of this interval."
+        "note": "Race lead-up. The HUD reads 5/14 across repeated frames."
       },
       {
-        "start": 50440,
-        "end": 50444,
+        "start": 50585,
+        "end": 50587,
         "category": "position_change",
-        "note": "The selected bike-race moment. Repeated HUD readings support a 5th-to-6th change across the before/after windows. Cause and race exit are unverified."
+        "hud": {"before": 5, "after": 6, "entrants": 14},
+        "note": "Frame-matched to the saved race clip. The HUD reads 5/14 through 14:03:05 and 6/14 from 14:03:06 across several frames. Cause and race exit are unverified."
       }
     ],
     "MCP71ny8wAo": [
