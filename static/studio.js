@@ -21,6 +21,7 @@ const scanDepth = document.querySelector("#scan-depth");
 const scanDepthField = document.querySelector("#scan-depth-field");
 const visualAI = document.querySelector("#visual-ai");
 const visualAIOff = document.querySelector("#visual-ai-off");
+const visionProvider = document.querySelector("#vision-provider");
 const recordingFolder = document.querySelector("#recording-folder");
 const exampleButton = document.querySelector("#play-example");
 const exampleVideo = document.querySelector("#example-video");
@@ -56,6 +57,9 @@ function updateScanWindow() {
   scanDepthField.hidden = scanDepth.disabled;
   visualAI.disabled = scanWindow.hidden;
   visualAIOff.disabled = scanWindow.hidden || visualAI.checked;
+  if (visionProvider) {
+    visionProvider.disabled = scanWindow.hidden || !visualAI.checked;
+  }
 }
 
 mode.addEventListener("change", updateScanWindow);
@@ -69,13 +73,19 @@ form.addEventListener("invalid", (event) => {
 
 function timestamp(seconds) {
   const whole = Math.floor(seconds);
-  return [Math.floor(whole / 60), String(whole % 60).padStart(2, "0")].join(":");
+  const minutes = Math.floor(whole / 60);
+  const tail = String(whole % 60).padStart(2, "0");
+  if (minutes < 60) return `${minutes}:${tail}`;
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${tail}`;
 }
 
 function showProgress(state) {
   jobProgress.dataset.state = state.status;
   if (statusText.textContent !== state.message) statusText.textContent = state.message;
-  const notice = state.vision_notice || "";
+  const notice = [
+    state.cloud_reviewed ? `Gemini reviewed ${state.cloud_reviewed} ${state.cloud_reviewed === 1 ? "clip" : "clips"}.` : "",
+    state.vision_notice,
+  ].filter(Boolean).join(" ");
   if (visionNotice.textContent !== notice) visionNotice.textContent = notice;
   visionNotice.hidden = !notice;
   progressBar.hidden = state.status === "error";
@@ -114,6 +124,34 @@ function addClip(clip, videoId) {
     source.style.color = "inherit";
     source.textContent = range.textContent;
     range.replaceChildren(source);
+    if (Number.isFinite(clip.event_time)) {
+      const moment = document.createElement("a");
+      moment.href = `https://www.youtube.com/watch?v=${videoId}&t=${Math.floor(clip.event_time)}s`;
+      moment.textContent = `Jump to ${timestamp(clip.event_time)}`;
+      range.append(" · ", moment);
+    }
+  }
+  const evidence = document.createElement("dl");
+  evidence.className = "clip-evidence";
+  function addEvidence(label, text) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const value = document.createElement("dd");
+    value.textContent = text;
+    evidence.append(term, value);
+  }
+  if (clip.audience) {
+    const {channel, count, time} = clip.audience;
+    if (channel === "chat") {
+      addEvidence("Replay chat", `${count} distinct viewers around ${timestamp(time)}`);
+    } else {
+      addEvidence("Video comments", `${count} ${count === 1 ? "viewer referenced" : "viewers referenced"} ${timestamp(time)}`);
+    }
+  }
+  if (clip.hud?.result === "did_not_finish") {
+    addEvidence("Race HUD", "Race result says the player did not finish");
+  } else if (clip.hud && clip.hud.before !== clip.hud.after) {
+    addEvidence("Race HUD", `Position ${clip.hud.before} to ${clip.hud.after} out of ${clip.hud.entrants}`);
   }
   const reason = document.createElement("p");
   reason.textContent = clip.reason;
@@ -131,7 +169,18 @@ function addClip(clip, videoId) {
     actions.append(edit);
   }
   actions.append(download);
-  card.append(video, title, range, reason, actions);
+  card.append(video, title, range);
+  if (evidence.children.length) {
+    card.append(evidence);
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Detection details";
+    details.append(summary, reason);
+    card.append(details);
+  } else {
+    card.append(reason);
+  }
+  card.append(actions);
   clips.append(card);
   results.hidden = false;
 }

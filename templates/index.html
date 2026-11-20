@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Shortlist Studio</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
-  <script src="{{ url_for('static', filename='studio.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='clip-evidence') }}" defer></script>
 </head>
 <body class="studio-app">
   {{ navigation('create') }}
@@ -35,9 +35,14 @@
         <option value="talk">Podcast / interview</option>
         <option value="stream" selected>Gaming stream / GTA highlights</option>
       </select>
+      <label for="clip-count">Maximum clips</label>
+      <select name="clip_count" id="clip-count" aria-describedby="clip-count-help">
+        {% for count in range(1, 21) %}
+          <option value="{{ count }}"{% if count == 5 %} selected{% endif %}>{{ count }}</option>
+        {% endfor %}
+      </select>
+      <small id="clip-count-help">Shortlist may export fewer clips if it finds fewer distinct highlights.</small>
       <div id="talk-options" class="field-stack" hidden>
-        <label for="clip-count">Maximum clips</label>
-        <select name="clip_count" id="clip-count"><option>5</option><option>10</option><option>15</option><option>20</option></select>
         <label for="clip-length">Maximum clip duration</label>
         <select name="clip_length" id="clip-length">
           <option value="30">30 seconds</option><option value="60" selected>1 minute</option>
@@ -55,13 +60,22 @@
           <select id="scan-depth" name="depth">
             <option value="fast">Quick · up to 4 minutes</option>
             <option value="balanced" selected>Balanced · up to 8 minutes</option>
-            <option value="deep">Deep · up to 24 minutes</option>
+            <option value="deep">Deep · up to 48 minutes</option>
+            <option value="wide">Wide · up to 2 hours of footage</option>
           </select>
+          <small>Wide scans more of the replay and can take much longer.</small>
         </div>
         <div class="check-field">
           <input type="hidden" name="visual_ai" value="off" id="visual-ai-off" disabled>
           <label><input type="checkbox" name="visual_ai" id="visual-ai" checked disabled> Review gameplay with visual AI</label>
-          <div><small>Checks the top candidates on this computer and takes longer.</small></div>
+        </div>
+        <div>
+          <label for="vision-provider">Gameplay review model</label>
+          <select id="vision-provider" name="vision_provider" disabled>
+            <option value="local">Local visual AI</option>
+            <option value="cloud"{% if not cloud_vision_enabled %} disabled{% endif %}>Gemini 3.8 Flash{% if not cloud_vision_enabled %} (API key required){% endif %}</option>
+          </select>
+          <small>Use a key from a Google AI Studio project on the Free tier. Gemini receives shortlisted clips and their audio.</small>
         </div>
         </div>
       </details>

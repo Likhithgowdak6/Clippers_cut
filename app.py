@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,7 +11,7 @@ from pathlib import Path
 from secrets import token_urlsafe
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Lock, Thread
-from time import monotonic
+from time import monotonic, time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 from zipfile import ZIP_STORED, ZipFile
@@ -21,13 +22,16 @@ import requests
 from flask import Blueprint, Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 
 from clipping import Clip, Segment, caption_cues, rank_clips, rank_gameplay, same_gameplay_moment
+from audience import collect_reactions
+from cloud_vision import GeminiHTTPError, api_key as cloud_vision_key, review_clip as review_cloud_clip
 from editor import ExportOptions, face_commands, join_passages, parse_edit, render_format
+from evaluation import covered_seconds
 from project_store import load_projects, save_project
 from stock import download_still, lookup
-from race_hud import inspect_hud
+from race_hud import inspect_hud, placement_headline, scan_hud_changes
 from replay_import import download_replay_window, prepare_replay
 from yt_dlp.utils import DownloadError
-from vision import describe, visual_headline
+from vision import review_event
 
 app = Flask(__name__)
 review_pages = Blueprint("review_pages", __name__)
@@ -98,9 +102,9 @@ def persist(job_id):
     save_project(workspace, job_id, jobs[job_id], projects, edits, review_notes)
 
 
-def import_youtube(video_id, directory, start=None, length=180):
+def import_youtube(video_id, directory, start=None, length=180, *, exact_start=False):
     section = [] if start is None else ["--download-sections", f"*{start}-{start + length}"]
-    resolution = 1080 if start is None else 720
+    resolution = 1080 if start is None or exact_start else 720
     command = (
         [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist",
          "--no-progress", "--socket-timeout", "20", "--retries", "2",
@@ -108,6 +112,7 @@ def import_youtube(video_id, directory, start=None, length=180):
          "--break-match-filter", "live_status != post_live & !is_live & !is_upcoming",
          "--format", f"bv*[height<={resolution}]+ba/b[height<={resolution}]",
          "--merge-output-format", "mkv", "--output", "youtube.%(ext)s",
+         *(["--force-keyframes-at-cuts"] if exact_start and start is not None else []),
          *(["--max-filesize", "2G"] if start is None else section),
          f"https://www.youtube.com/watch?v={video_id}"]
     )
@@ -115,6 +120,14 @@ def import_youtube(video_id, directory, start=None, length=180):
     try:
         subprocess.run(command, cwd=directory, capture_output=True, check=True,
                        timeout=1800 if start is None else 120)
+    except subprocess.TimeoutExpired:
+        if start is None or length <= 45:
+            raise
+        app.logger.warning("Retrying timed-out YouTube section with a shorter excerpt")
+        with TemporaryDirectory(dir=directory) as retry:
+            source, offset = import_youtube(video_id, Path(retry), start, 45, exact_start=exact_start)
+            destination = directory / f"youtube-retry{source.suffix}"
+            return source.replace(destination), offset
     except subprocess.CalledProcessError as error:
         if start is None or b"does not pass filter" not in error.stdout + error.stderr:
             raise
@@ -179,11 +192,28 @@ def audio_peaks(samples):
     return selected
 
 
-def sustained_motion(frames, fps):
+def adaptive_scene_cuts(frames, change, fps):
+    cuts = np.zeros(len(change), dtype=bool)
+    for index in np.flatnonzero(change >= .38):
+        start, end = max(0, index - 2 * fps), index + 2 * fps + 1
+        neighbors = np.concatenate((change[start:index], change[index + 1:end]))
+        if not len(neighbors) or change[index] < max(.38, 2.5 * float(np.median(neighbors))):
+            continue
+        # A histogram shift helps distinguish a new shot from motion within one shot.
+        before = np.bincount(frames[index].ravel() // 16, minlength=16)
+        after = np.bincount(frames[index + 1].ravel() // 16, minlength=16)
+        distance = np.abs(before - after).sum() / (2 * frames[index].size)
+        cuts[index] = change[index] >= .78 or distance >= .24
+    return cuts
+
+
+def sustained_motion(frames, fps, scene_cuts=None):
     center = frames[:, 10:-8, 22:-14].astype(np.int16)
     change = (np.abs(np.diff(center, axis=0)) > 20).mean(axis=(1, 2))
     candidates = []
     for index in range(8 * fps, len(change) - 4 * fps):
+        if scene_cuts is not None and scene_cuts[index - 2 * fps:index + 4 * fps].any():
+            continue
         before = float(np.median(change[index - 8 * fps:index]))
         activity = change[index:index + 4 * fps]
         during = float(np.median(activity))
@@ -211,7 +241,8 @@ def visual_peaks(source):
         return [], [], frames
     differences = np.abs(np.diff(frames.astype(np.int16), axis=0))
     change = (differences > 22).mean(axis=(1, 2))
-    change[change > .70] = 0  # Ignore most hard cuts and fades to a different scene.
+    scene_cuts = adaptive_scene_cuts(frames, change, fps)
+    change[scene_cuts] = 0
     rate = np.convolve(change, np.ones(3) / 3, mode="same")
     baseline = float(np.median(rate))
     candidates = [
@@ -224,7 +255,7 @@ def visual_peaks(source):
             peaks.append((time, strength))
             if len(peaks) == 120:
                 break
-    return peaks, sustained_motion(frames, fps), frames[::fps, 3:-3:3, 6:-6:3]
+    return peaks, sustained_motion(frames, fps, scene_cuts), frames[::fps, 3:-3:3, 6:-6:3]
 
 
 def gameplay_signals(source):
@@ -241,7 +272,8 @@ def scout_score(signals):
                 for point, strength in peaks), default=0)
 
 
-def analyze(source, language, stream, signals=None, clip_count=5, clip_length=60):
+def analyze(source, language, stream, signals=None, clip_count=5, clip_length=60, direct_review=False,
+            audience_time=None):
     if stream:
         samples, audio, motion, sustained, frames = signals if signals is not None else gameplay_signals(source)
     else:
@@ -249,7 +281,35 @@ def analyze(source, language, stream, signals=None, clip_count=5, clip_length=60
     segments = transcribe(samples, language)
     duration = len(samples) / 16000
     if stream:
-        clips = rank_gameplay(segments, audio, motion, duration, sustained=sustained)
+        clips = rank_gameplay(segments, audio, motion, duration, sustained=sustained, limit=max(5, clip_count))
+        hud_clips = []
+        try:
+            for time, hud, support in scan_hud_changes(source, duration):
+                start, end = max(0, time - 8), min(duration, time + 13)
+                excerpt = tuple(segment for segment in segments if segment.end > start and segment.start < end)
+                transition = (f"Race HUD shows position {hud['before']} before and {hud['after']} after."
+                              if hud["after"] is not None else "The race HUD reports that the player did not finish.")
+                clip = Clip(start, end, placement_headline(hud), transition, excerpt,
+                            score=float(support),
+                            event_time=time, hud=hud)
+                if all(not same_gameplay_moment(clip, other) for other in hud_clips):
+                    hud_clips.append(clip)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            app.logger.warning("Could not scan race HUD", exc_info=True)
+        clips = hud_clips + [clip for clip in clips if all(
+            not same_gameplay_moment(clip, other) for other in hud_clips
+        )]
+        if audience_time is not None and not any(clip.start <= audience_time < clip.end for clip in clips):
+            start, end = max(0, audience_time - 8), min(duration, audience_time + 13)
+            if end - start >= 10:
+                excerpt = tuple(segment for segment in segments if segment.end > start and segment.start < end)
+                clips.insert(len(hud_clips), Clip(start, end, "", "Audience reactions surfaced this excerpt.", excerpt,
+                                                 score=2.0, event_time=audience_time))
+        clips = clips[:max(5, clip_count)]
+        if not clips and direct_review and duration >= 5:
+            end = min(45, duration)
+            excerpt = tuple(segment for segment in segments if segment.start < end)
+            clips = [Clip(0, end, "", "Direct review of the requested gameplay excerpt.", excerpt)]
         return [(clip, frames[int(clip.start):int(clip.end)].astype(np.int16)) for clip in clips]
     clips = rank_clips(segments, limit=clip_count, max_duration=clip_length)
     if not clips and segments and 5 <= duration <= clip_length:
@@ -270,20 +330,51 @@ def repeats_footage(left, right):
     return False
 
 
-SCAN_PLANS = {"fast": (4, 60, 4), "balanced": (12, 40, 6), "deep": (36, 40, 8)}
+SCAN_PLANS = {"fast": (4, 60, 4), "balanced": (12, 40, 6), "deep": (72, 40, 12), "wide": (120, 60, 18)}
 
 
-def replay_windows(length, heatmap, depth="balanced"):
+def replay_windows(length, heatmap, depth="balanced", prior_coverage=(), reactions=()):
     if length <= 180:
-        return [(0, 180)]
+        return [(0, length)]
     limit, size, _ = SCAN_PLANS[depth]
     if length <= limit * size:
         return [(start, min(size, length - start)) for start in range(0, length, size)]
     last_start = length - size
     starts = []
+    def fresh_seconds(start):
+        overlap = sum(max(0, min(start + size, end) - max(start, begin))
+                      for begin, end in prior_coverage)
+        return max(0, size - overlap)
+
+    reaction_limit = limit // 2 if depth == "wide" else max(1, limit // 3)
+    reaction_times = []
+    for time, _, _ in reactions:
+        start = max(0, min(last_start, round(time - size / 2)))
+        if fresh_seconds(start) >= size / 2 and all(abs(start - other) >= size for other in starts):
+            starts.append(start)
+            reaction_times.append(time)
+            if len(starts) >= reaction_limit:
+                break
+    if depth == "wide":
+        # An isolated reference may point to the start of a race or encounter.
+        isolated = sorted(reaction_times, key=lambda point: -min(
+            (abs(point - other) for other in reaction_times if point != other), default=length
+        ))
+        neighbors = 0
+        for time in isolated:
+            for displacement in (-2 * size, 2 * size):
+                start = max(0, min(last_start, round(time + displacement - size / 2)))
+                if fresh_seconds(start) >= size / 2 and all(abs(start - other) >= size for other in starts):
+                    starts.append(start)
+                    neighbors += 1
+                    if neighbors >= limit // 4:
+                        break
+            if neighbors >= limit // 4:
+                break
     if heatmap:
         scores = [point["value"] for point in heatmap]
         threshold = float(np.median(scores)) + 0.15
+        heatmap_count = 0
         for point in sorted(heatmap, key=lambda item: item["value"], reverse=True):
             middle = (point["start_time"] + point["end_time"]) / 2
             if point["value"] < threshold:
@@ -291,15 +382,19 @@ def replay_windows(length, heatmap, depth="balanced"):
             if not size / 2 <= middle <= length - size / 2:
                 continue
             start = round(middle - size / 2)
-            if all(abs(start - other) >= size for other in starts):
+            if fresh_seconds(start) >= size / 2 and all(abs(start - other) >= size for other in starts):
                 starts.append(start)
-                if len(starts) == max(1, limit // 4):
+                heatmap_count += 1
+                if heatmap_count >= max(1, limit // (8 if depth == "wide" else 4)):
                     break
     samples = [round(point) for point in np.linspace(0, last_start, limit * 4)]
     while len(starts) < limit:
-        candidates = [point for point in samples if point not in starts]
-        start = max(candidates, key=lambda point: min(
-            (abs(point - other) for other in starts), default=length - point
+        candidates = [point for point in samples if all(abs(point - other) >= size for other in starts)]
+        if not candidates:
+            break
+        start = max(candidates, key=lambda point: (
+            fresh_seconds(point),
+            min((abs(point - other) for other in starts), default=length - point),
         ))
         starts.append(start)
     return [(start, size) for start in sorted(starts)]
@@ -317,7 +412,7 @@ def import_scout_window(video_id, folder, start, size, prepared=None):
     return import_youtube(video_id, folder, start, size)
 
 
-def search_replay(job_id, directory, video_id, language, depth):
+def search_replay(job_id, directory, video_id, language, depth, clip_count=5):
     update(job_id, status="importing", message="Finding scan windows across the replay.")
     metadata = subprocess.run(
         [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist",
@@ -330,91 +425,204 @@ def search_replay(job_id, directory, video_id, language, depth):
         raise ValueError("Automatic scanning needs an available replay.")
     if not replay.get("duration"):
         raise ValueError("Replay duration unavailable.")
-    windows = replay_windows(int(replay["duration"]), replay.get("heatmap"), depth)
+    with lock:
+        previous = max((
+            (key, job) for key, job in jobs.items()
+            if key != job_id and job.get("video_id") == video_id and job.get("status") in {"complete", "error"}
+            and job.get("source_seconds") == replay["duration"] and job.get("scan_depth") == depth
+            and job.get("scan_plan")
+        ), key=lambda entry: entry[1].get("scan_started_at", 0), default=None)
+        recent_coverage = [
+            interval for key, job in jobs.items()
+            if key != job_id and job.get("video_id") == video_id and job.get("status") == "complete"
+            and job.get("source_seconds") == replay["duration"]
+            for interval in job.get("coverage") or ()
+        ]
+    merged_coverage = []
+    for start, end in sorted(recent_coverage):
+        if merged_coverage and start <= merged_coverage[-1][1]:
+            merged_coverage[-1][1] = max(merged_coverage[-1][1], end)
+        else:
+            merged_coverage.append([start, end])
+    duration = int(replay["duration"])
+    cached = {}
+    if previous and previous[1]["status"] == "error" and previous[1].get("scan_checkpoint"):
+        previous_id, state = previous
+        windows, reactions = state["scan_plan"], state.get("scan_reactions", [])
+        previous_scan = workspace / previous_id / "replay-scan"
+        for entry in state["scan_checkpoint"]:
+            start, name, offset = entry
+            source = previous_scan / f"window-{start}" / Path(name).name
+            if source.is_file():
+                cached[start] = (source, offset)
+    else:
+        update(job_id, status="importing", message="Checking for timestamped audience reactions.")
+        with TemporaryDirectory(prefix="audience-", dir=directory) as scratch:
+            reactions = collect_reactions(video_id, duration, Path(scratch),
+                                          replay.get("live_status") in {"was_live", "post_live"})
+        windows = replay_windows(duration, replay.get("heatmap"), depth, merged_coverage, reactions)
+    update(job_id, audience_peaks=len(reactions), scan_depth=depth, scan_plan=windows,
+           scan_reactions=reactions, source_seconds=duration, scan_checkpoint=[], scan_started_at=time(),
+           resumed_from=previous[0] if cached else None)
     replay_segments = None
     if replay.get("live_status") == "post_live":
         try:
-            replay_segments = prepare_replay(video_id, windows, shift_tail=True)
+            remaining = [(start, size) for start, size in windows if start not in cached]
+            if remaining:
+                replay_segments = prepare_replay(video_id, remaining, shift_tail=True)
         except (DownloadError, ValueError):
             app.logger.warning("Shared replay manifest unavailable for %s", video_id)
     update(job_id, status="scanning", scanned=0, windows=len(windows),
            message=f"Scanning replay windows (0 of {len(windows)} checked).")
     shortlisted = []
+    window_limit = max(SCAN_PLANS[depth][2], (clip_count + 1) // 2)
     coverage = []
     completed = 0
     scanned = 0
+    reused = 0
+    checkpoint = []
+    def audience_order(window):
+        start, size = window
+        return next((index for index, point in enumerate(reactions) if start <= point[0] < start + size), len(reactions))
+
     with ThreadPoolExecutor(max_workers=min(4, len(windows))) as imports:
         pending = {}
-        for start, size in windows:
+        for start, size in sorted(windows, key=audience_order):
             folder = directory / f"window-{start}"
             folder.mkdir()
             prepared = replay_segments.get(start) if replay_segments else None
-            future = imports.submit(import_scout_window, video_id, folder, start, size, prepared)
+            future = imports.submit(load_scout_window, video_id, folder, start, size, prepared, cached.get(start))
             pending[future] = start
         for future in as_completed(pending):
             try:
-                source, offset = future.result()
+                source, offset, from_checkpoint = future.result()
                 signals = gameplay_signals(source)
             except (subprocess.SubprocessError, ValueError, OSError):
                 app.logger.warning("Could not scan window at %s for %s", pending[future], video_id)
             else:
                 scanned += 1
-                coverage.append((offset, offset + len(signals[0]) / 16000))
-                shortlisted.append((scout_score(signals), source, offset, signals))
+                reused += int(from_checkpoint)
+                checkpoint.append((pending[future], source.name, offset))
+                end = offset + len(signals[0]) / 16000
+                coverage.append((offset, min(end, duration)))
+                audience = [point for point in reactions if offset <= point[0] < end]
+                shortlisted.append((scout_score(signals) + (.5 if audience else 0), source, offset, signals, audience))
+                shortlisted.sort(key=lambda item: (-item[0], item[2]))
+                del shortlisted[window_limit:]
             completed += 1
-            update(job_id, status="scanning", scanned=completed, windows=len(windows),
-                   message=f"Scanning replay windows ({completed} of {len(windows)} checked).")
+            minutes = covered_seconds(coverage) / 60
+            update(job_id, status="scanning", scanned=completed, windows=len(windows), scan_checkpoint=list(checkpoint),
+                   reused_windows=reused, coverage=sorted(coverage),
+                   message=f"Checked {completed} of {len(windows)} windows. Scanned {minutes:.1f} minutes of footage.")
     update(job_id, scanned=scanned, windows=len(windows), coverage=sorted(coverage),
            source_seconds=replay["duration"])
     if not scanned:
         raise ValueError("None of the selected replay windows could be read.")
     matches = []
-    shortlist = sorted(shortlisted, key=lambda item: (-item[0], item[2]))[:SCAN_PLANS[depth][2]]
-    for index, (_, source, offset, signals) in enumerate(shortlist, 1):
-        update(job_id, status="transcribing", message=f"Transcribing shortlisted window {index} of {len(shortlist)}.")
-        clips = analyze(source, language, stream=True, signals=signals)
-        matches.extend((source, offset, clip, signature) for clip, signature in clips)
+    for index, (_, source, offset, signals, audience) in enumerate(shortlisted, 1):
+        update(job_id, status="transcribing", message=f"Transcribing shortlisted window {index} of {len(shortlisted)}.")
+        audience_pick = next((point for point in audience if point[1] >= 3), None)
+        clips = analyze(source, language, stream=True, signals=signals, clip_count=clip_count,
+                        audience_time=audience_pick[0] - offset if audience_pick else None)
+        for clip, signature in clips:
+            reaction = next((point for point in audience if clip.start <= point[0] - offset < clip.end), None)
+            if reaction:
+                reaction_time, count, channel = reaction
+                clip = replace(clip, score=clip.score + .65,
+                               audience={"time": reaction_time, "count": count, "channel": channel})
+            matches.append((source, offset, clip, signature))
     update(job_id, candidates_found=[
         {"start": offset + clip.start, "end": offset + clip.end}
         for _, offset, clip, _ in matches
     ])
     selected = []
-    for source, offset, clip, signature in sorted(matches, key=lambda match: (-match[2].score, match[1] + match[2].start)):
+    for source, offset, clip, signature in sorted(
+        matches, key=lambda match: (*gameplay_rank(match), -(match[1] + match[2].start)), reverse=True
+    ):
         if any(
             same_gameplay_moment(clip, other, offset, origin)
-            or repeats_footage(signature, existing)
+            or ((not clip.hud or not other.hud or clip.hud == other.hud) and repeats_footage(signature, existing))
             for _, origin, other, existing in selected
         ):
             continue
         selected.append((source, offset, clip, signature))
-        if len(selected) == 8:
+        if len(selected) >= max(8, clip_count):
             break
     return [(source, offset, clip) for source, offset, clip, _ in selected]
 
 
-def review_gameplay(job_id, matches, limit=4):
+def load_scout_window(video_id, folder, start, size, prepared, cached):
+    if cached:
+        source, offset = cached
+        destination = folder / source.name
+        try:
+            os.link(source, destination)
+            return destination, offset, True
+        except OSError:
+            pass
+    source, offset = import_scout_window(video_id, folder, start, size, prepared)
+    return source, offset, False
+
+
+def review_gameplay(job_id, matches, limit=4, provider="local", language=None, allow_local=True):
     candidates = matches[:limit]
     reviewed = []
     vision_available = True
+    cloud_available = provider == "cloud"
+    cloud_reviewed_count = 0
     for index, (source, offset, clip) in enumerate(candidates):
+        reviewer = "Gemini" if cloud_available else "Local visual AI"
         update(job_id, status="reviewing", reviewed=index, candidates=len(candidates),
-               message=f"Visual AI is checking highlight {index + 1} of {len(candidates)}. First use may download the model.")
-        hud = None
-        try:
-            hud = inspect_hud(source, clip.start, clip.end, clip.event_time)
-        except Exception:
-            app.logger.warning("Race HUD could not be read", exc_info=True)
-        description = ""
-        decisive_hud = hud and (hud.get("result") or hud["before"] != hud["after"])
-        if vision_available and not decisive_hud:
+               message=f"{reviewer} is checking highlight {index + 1} of {len(candidates)}.")
+        hud = clip.hud
+        if hud is None:
             try:
-                description = describe(source, clip.start, clip.end, event_time=clip.event_time)
+                hud = inspect_hud(source, clip.start, clip.end, clip.event_time)
+            except Exception:
+                app.logger.warning("Race HUD could not be read", exc_info=True)
+        description = ""
+        title, boost = "", 0
+        decisive_hud = hud and (hud.get("result") or hud["before"] != hud["after"])
+        cloud_reviewed = False
+        payoff_time = None
+        if cloud_available:
+            try:
+                title, boost, description, payoff_seconds = review_cloud_clip(source, clip.start, clip.end, language)
+                cloud_reviewed = True
+                if payoff_seconds is not None:
+                    payoff_time = clip.start + payoff_seconds
+                cloud_reviewed_count += 1
+                update(job_id, cloud_reviewed=cloud_reviewed_count)
+            except Exception as error:
+                if isinstance(error, GeminiHTTPError):
+                    detail = f"Gemini returned HTTP {error.status_code}"
+                    if error.status_code == 429:
+                        detail = "Gemini reached a rate or quota limit (HTTP 429)"
+                elif isinstance(error, (requests.Timeout, subprocess.TimeoutExpired)):
+                    detail = "Gemini review timed out"
+                else:
+                    detail = "Gemini review failed"
+                app.logger.warning("%s (%s)", detail, type(error).__name__)
+                update(job_id, vision_notice=f"{detail}. Continuing with local analysis.")
+                cloud_available = False
+        if allow_local and vision_available and not cloud_reviewed and not decisive_hud:
+            try:
+                transcript = " ".join(segment.text for segment in clip.segments)
+                title, boost, description = review_event(
+                    source, clip.start, clip.end, clip.event_time, transcript,
+                    second_pass=limit > 2 and index < limit - 2,
+                )
             except Exception:
                 app.logger.exception("Local visual review failed")
                 update(job_id, vision_notice="Visual AI was unavailable. Picks can still use race HUD, motion, audio and speech.")
                 vision_available = False
-        transcript = " ".join(segment.text for segment in clip.segments)
-        title, boost = visual_headline(description, transcript)
+        if payoff_time is not None and not decisive_hud and (
+            clip.event_time is None or abs(payoff_time - clip.event_time) >= 3
+        ):
+            try:
+                hud = inspect_hud(source, clip.start, clip.end, payoff_time) or hud
+            except Exception:
+                app.logger.warning("Race HUD could not be read around the Gemini payoff", exc_info=True)
         reason = clip.reason
         if hud:
             old, new, entrants = hud["before"], hud["after"], hud["entrants"]
@@ -428,9 +636,17 @@ def review_gameplay(job_id, matches, limit=4):
                 action = "Drops" if new > old else "Moves up"
                 title = f"{action} from {old}/{entrants} to {new}/{entrants}"
                 boost += 1.5
-        elif description:
-            reason += f" Visual AI observation (unverified): {description}"
-        reviewed.append((source, offset, replace(clip, title=title or clip.title,
+        if description:
+            reviewer = "Gemini" if cloud_reviewed else "Visual AI"
+            timestamp = f" at {offset + payoff_time:.1f}s in the source" if payoff_time is not None else ""
+            reason += f" {reviewer} observation{timestamp} (unverified): {description}"
+        if payoff_time is not None:
+            if clip.event_time is None and clip.end - clip.start > 30:
+                start, end = max(clip.start, payoff_time - 14), min(clip.end, payoff_time + 14)
+                clip = replace(clip, start=start, end=end,
+                               segments=tuple(segment for segment in clip.segments if segment.end > start and segment.start < end))
+            clip = replace(clip, event_time=payoff_time)
+        reviewed.append((source, offset, replace(clip, title=title if cloud_reviewed else title or clip.title,
                                                 score=clip.score + boost, reason=reason, hud=hud,
                                                 visual_event=bool(title and boost >= .85))))
     return sorted(reviewed + matches[len(candidates):], key=gameplay_rank, reverse=True)
@@ -440,7 +656,7 @@ def gameplay_rank(match):
     clip = match[2]
     hud = clip.hud
     verified_event = bool(hud and (hud.get("result") or hud["before"] != hud["after"]))
-    return verified_event, clip.visual_event, clip.score
+    return verified_event, clip.visual_event, bool(clip.audience and clip.audience["count"] >= 3), clip.score
 
 
 GENERIC_GAMEPLAY_HEADLINES = {
@@ -487,7 +703,7 @@ def track_faces(source, clip, directory, options):
 
 
 def render_edit(edit_id, job_id, source, clip, options, broll, directory, stock_id=None):
-    intermediate = directory / "passages.mp4"
+    intermediate = directory / "passages.mkv"
     try:
         with lock:
             edits[edit_id].update(status="rendering", message="Preparing export.")
@@ -522,7 +738,7 @@ def render_edit(edit_id, job_id, source, clip, options, broll, directory, stock_
 
 
 def process(job_id, source, stream, language, hook, video_id=None, scan_start=None, visual_ai=True, depth="balanced",
-            clip_count=5, clip_length=60, recording=None):
+            clip_count=5, clip_length=60, recording=None, vision_provider="local"):
     started_at = monotonic()
     directory = source.parent
     scouting = None
@@ -543,9 +759,10 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
                     if partial != source:
                         partial.unlink(missing_ok=True)
         if automatic:
-            scouting = TemporaryDirectory(prefix="scan-", dir=directory)
+            scouting = directory / "replay-scan"
+            scouting.mkdir()
             try:
-                matches = search_replay(job_id, Path(scouting.name), video_id, language, depth)
+                matches = search_replay(job_id, scouting, video_id, language, depth, clip_count)
             except (subprocess.SubprocessError, ValueError, OSError):
                 update(job_id, status="error", message="Could not scan this replay. Check that it plays publicly or enter a specific start time.")
                 return
@@ -557,7 +774,7 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
             )
             update(job_id, status="importing", message=message)
             try:
-                source, offset = import_youtube(video_id, source.parent, offset if stream else None)
+                source, offset = import_youtube(video_id, source.parent, offset if stream else None, exact_start=stream)
             except (subprocess.SubprocessError, ValueError, OSError) as error:
                 output = (getattr(error, "stdout", None) or b"") + (getattr(error, "stderr", None) or b"")
                 if b"does not pass filter" in output or b"Breaking on filtered video" in output:
@@ -573,14 +790,20 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
                 for partial in source.parent.glob("youtube.*"):
                     if partial != source:
                         partial.unlink(missing_ok=True)
+        direct_candidate = False
         if not automatic:
             update(job_id, status="transcribing", message="Analyzing the video. The first run may download the speech model.")
             signals = gameplay_signals(source) if stream else None
+            direct_review = False
             if signals is not None:
-                update(job_id, coverage=[(offset, offset + len(signals[0]) / 16000)])
+                duration = len(signals[0]) / 16000
+                update(job_id, coverage=[(offset, offset + duration)])
+                direct_review = visual_ai and vision_provider == "cloud" and (scan_start is not None or duration <= 45)
             matches = [(source, offset, clip) for clip, _ in analyze(
-                source, language, stream, signals=signals, clip_count=clip_count, clip_length=clip_length
+                source, language, stream, signals=signals, clip_count=clip_count, clip_length=clip_length,
+                direct_review=direct_review,
             )]
+            direct_candidate = direct_review and bool(matches) and matches[0][2].event_time is None
             update(job_id, candidates_found=[
                 {"start": origin + clip.start, "end": origin + clip.end}
                 for _, origin, clip in matches
@@ -593,15 +816,24 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
             update(job_id, status="error", message=message)
             return
         if stream and visual_ai:
-            matches = review_gameplay(job_id, matches, limit={"fast": 2, "balanced": 5, "deep": 6}[depth])
-        matches = matches[:5 if stream else clip_count]
+            matches = review_gameplay(job_id, matches, limit={"fast": 2, "balanced": 5, "deep": 6, "wide": 6}[depth],
+                                      provider=vision_provider, language=language, allow_local=not direct_candidate)
+        if direct_candidate and not any(gameplay_rank(matches[0])[:2]):
+            update(job_id, status="error", message="Direct review found no clear highlight to export.")
+            return
+        matches = matches[:clip_count]
         if stream and not hook:
             matches = gameplay_titles(matches)
         results = []
         for index, (clip_source, offset, clip) in enumerate(matches, 1):
             if clip_source.parent != directory:
                 if clip_source not in retained:
-                    retained[clip_source] = clip_source.replace(directory / f"source-{index}{clip_source.suffix}")
+                    destination = directory / f"source-{index}{clip_source.suffix}"
+                    try:
+                        os.link(clip_source, destination)
+                    except OSError:
+                        shutil.copyfile(clip_source, destination)
+                    retained[clip_source] = destination
                 clip_source = retained[clip_source]
             update(job_id, status="rendering", total=len(matches), message=f"Rendering short {index} of {len(matches)}.")
             clip = replace(clip, hook=hook or (clip.hook if stream else clip.title))
@@ -612,6 +844,8 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
                 "title": hook or clip.title, "reason": clip.reason, "start": offset + clip.start, "end": offset + clip.end,
                 "preview": f"/jobs/{job_id}/clips/{filename}",
                 "hud": clip.hud,
+                "audience": clip.audience if clip.audience and offset + clip.start <= clip.audience["time"] < offset + clip.end else None,
+                "event_time": offset + clip.event_time if clip.event_time is not None else None,
                 "editor": f"/jobs/{job_id}/editor/{index}",
             })
             if index == 1:
@@ -623,6 +857,10 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
         message = f"{len(results)} {'short' if len(results) == 1 else 'shorts'} ready."
         if coverage is not None:
             message += f" Checked {coverage} of {windows} selected replay windows."
+            minutes = covered_seconds(jobs[job_id].get("coverage", [])) / 60
+            message += f" Scanned {minutes:.1f} minutes of footage."
+            if jobs[job_id].get("reused_windows"):
+                message += f" Reused {jobs[job_id]['reused_windows']} saved windows."
         update(job_id, status="complete", message=message)
     except Exception:
         app.logger.exception("Clip job failed")
@@ -634,13 +872,16 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
             source.unlink(missing_ok=True)
             for media in retained.values():
                 media.unlink(missing_ok=True)
-        if scouting is not None:
-            scouting.cleanup()
+        if scouting is not None and jobs.get(job_id, {}).get("status") == "complete":
+            shutil.rmtree(scouting, ignore_errors=True)
+            predecessor = jobs[job_id].get("resumed_from")
+            if predecessor and re.fullmatch(r"[a-f0-9]{32}", predecessor):
+                shutil.rmtree(workspace / predecessor / "replay-scan", ignore_errors=True)
 
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", cloud_vision_enabled=bool(cloud_vision_key()))
 
 
 @app.get("/example-output")
@@ -689,7 +930,7 @@ def create_job():
         clip_length = int(request.form.get("clip_length", 60))
     except ValueError:
         return jsonify(error="Choose a supported clip count and duration."), 400
-    if clip_count not in {5, 10, 15, 20} or clip_length not in {30, 60, 90, 120}:
+    if not 1 <= clip_count <= 20 or clip_length not in {30, 60, 90, 120}:
         return jsonify(error="Choose a supported clip count and duration."), 400
     if depth not in SCAN_PLANS:
         return jsonify(error="Choose a supported replay search depth."), 400
@@ -718,6 +959,12 @@ def create_job():
     source_file = request.files.get("source")
     if not video_id and not recording and not source_file:
         return jsonify(error="Paste a supported video link or choose a video file."), 400
+    visual_ai = request.form.get("visual_ai", "on") == "on"
+    vision_provider = request.form.get("vision_provider", "local")
+    if vision_provider not in {"local", "cloud"}:
+        return jsonify(error="Choose a supported visual AI provider."), 400
+    if mode == "stream" and visual_ai and vision_provider == "cloud" and not cloud_vision_key():
+        return jsonify(error="Set SHORTLIST_GEMINI_API_KEY on the server to enable Gemini review."), 400
     job_id = uuid4().hex
     directory = workspace / job_id
     directory.mkdir()
@@ -726,9 +973,8 @@ def create_job():
         source_file.save(source)
     source_name = Path(source_file.filename).name if source_file else f"{recording[0]} recording" if recording else ""
     update(job_id, status="queued", message="Waiting to process video.", clips=[], video_id=video_id, source_name=source_name)
-    visual_ai = request.form.get("visual_ai", "on") == "on"
     worker.submit(process, job_id, source, mode == "stream", language or None, hook, video_id,
-                  scan_start, visual_ai, depth, clip_count, clip_length, recording)
+                  scan_start, visual_ai, depth, clip_count, clip_length, recording, vision_provider)
     return jsonify(id=job_id), 202
 
 
@@ -784,6 +1030,7 @@ def edit_clip(job_id, index):
                 for start, end, text in caption_cues(clip)]
         return render_template("editor.html", previous_exports=previous_exports, project={"jobId": job_id, "index": index,
             "duration": clip.end - clip.start, "headline": clip.hook, "cues": cues,
+            "moment": clip.event_time - clip.start if clip.event_time is not None and clip.start <= clip.event_time < clip.end else None,
             "framing": "fit" if stream else "smart"})
     try:
         payload = json.loads(request.form.get("edit", "{}"))
