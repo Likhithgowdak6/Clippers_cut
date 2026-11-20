@@ -31,20 +31,22 @@ def load_model():
     return torch, device, processor, model
 
 
-def event_frames(start, end, event_time):
+def event_frames(start, end, event_time, *, detail=False):
     duration = end - start
     center = duration / 2 if event_time is None else event_time - start
     center = max(0.5, min(duration - 0.5, center))
     last = max(0, int(duration * 2 - 1))
-    return sorted({max(0, min(last, round(point * 2))) for point in
-                   (.5, center - 1.5, center, center + 1.5, duration - 1)})
+    points = (center - 2, center - 1, center, center + 1, center + 2) if detail else (
+        .5, center - 1.5, center, center + 1.5, duration - 1
+    )
+    return sorted({max(0, min(last, round(point * 2))) for point in points})
 
 
-def sample_frames(source, start, end, event_time=None):
+def sample_frames(source, start, end, event_time=None, *, detail=False):
     from PIL import Image
 
     width, height = 384, 216
-    frames = event_frames(start, end, event_time)
+    frames = event_frames(start, end, event_time, detail=detail)
     select = "+".join(f"eq(n\\,{number})" for number in frames)
     raw = subprocess.run(
         [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(start),
@@ -61,9 +63,9 @@ def sample_frames(source, start, end, event_time=None):
             for i in range(0, len(raw) - stride + 1, stride)]
 
 
-def describe(source, start, end, event_time=None):
+def describe(source, start, end, event_time=None, *, detail=False):
     torch, device, processor, model = load_model()
-    frames = sample_frames(source, start, end, event_time)
+    frames = sample_frames(source, start, end, event_time, detail=detail)
     if not frames:
         return ""
     prompt = (
@@ -71,6 +73,12 @@ def describe(source, start, end, event_time=None):
         "Name the player's vehicle, the visible setting, and any clearly visible change in movement or nearby vehicles. "
         "Report ordinary movement if nothing changes. Use one short factual sentence."
     )
+    if detail:
+        prompt = (
+            "These are consecutive frames of the center of a game screen. Track the player's vehicle from the "
+            "first to the last image. Describe how its direction changes and what any nearby vehicle does "
+            "relative to it. If you cannot see a change or a second vehicle, say so. Ignore webcam and text."
+        )
     content = [{"type": "image"} for _ in frames] + [{"type": "text", "text": prompt}]
     text = processor.apply_chat_template([{"role": "user", "content": content}], add_generation_prompt=True)
     inputs = processor(text=text, images=frames, return_tensors="pt").to(device)
@@ -80,6 +88,26 @@ def describe(source, start, end, event_time=None):
     completion = output[:, inputs["input_ids"].shape[1]:]
     description = processor.batch_decode(completion, skip_special_tokens=True)[0]
     return " ".join(description.split())[:220]
+
+
+def review_event(source, start, end, event_time, transcript, *, second_pass=True):
+    overview = describe(source, start, end, event_time)
+    title, score = visual_headline(overview, transcript)
+    if not second_pass or score >= .85:
+        return title, score, overview
+    try:
+        detail = describe(source, start, end, event_time, detail=True)
+    except (OSError, subprocess.SubprocessError):
+        return title, score, overview
+    detail_title, detail_score = visual_headline(detail, transcript)
+    observations = " ".join(part for part in (overview, f"Close look: {detail}" if detail else "") if part)
+    # A passing claim can reverse which vehicle is moving. Abstain when the close view contradicts it.
+    if re.search(r"\bpasses\b", title, re.I) and re.search(r"\b(?:stationary|parked|stopped)\b", detail, re.I):
+        return "", 0, observations
+    # A second view can clarify an action. Keep severe claims subject to the same speech checks.
+    if detail_title and detail_score > max(.6, score):
+        title, score = detail_title, detail_score
+    return title, score, observations
 
 
 VEHICLES = (
