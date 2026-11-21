@@ -11,7 +11,7 @@ def covers(interval, time):
 
 def covered_seconds(intervals):
     total, end = 0, 0
-    for start, stop in sorted(intervals):
+    for start, stop in sorted((start, stop) for start, stop in intervals):
         if stop > end:
             total += stop - max(end, start)
             end = stop

@@ -40,6 +40,8 @@ form.addEventListener("invalid", (event) => {
 }, true);
 
 field("framing").value = project.framing;
+field("color").value = "#" + project.color;
+field("word-highlight").checked = project.wordHighlight;
 const seconds = (number) => Number(number.toFixed(3));
 for (const name of ["start", "end"]) field(name).max = seconds(project.duration);
 field("end").value = seconds(project.duration);
@@ -273,16 +275,21 @@ cropPresets.addEventListener("change", () => {
   cropStatus.textContent = "Crop loaded. Render the preview to check it.";
 });
 
+function usesFacecam() {
+  return ["gameplay", "reaction"].includes(field("framing").value);
+}
+
 function updateFramingControls() {
-  const split = field("framing").value === "gameplay";
+  const split = usesFacecam();
   field("facecam-crop").hidden = !split;
   for (const name of facecamFields) field(name).disabled = !split;
   if (split) loadCropFrame();
 }
 field("framing").addEventListener("change", updateFramingControls);
 field("start").addEventListener("change", () => {
-  if (field("framing").value === "gameplay") loadCropFrame();
+  if (usesFacecam()) loadCropFrame();
 });
+setCrop(project.facecam);
 updateFramingControls();
 
 function appearanceSettings() {
@@ -306,7 +313,7 @@ field("preview-guides").addEventListener("change", (event) => {
 field("render-layout-preview").addEventListener("click", async (event) => {
   if (!field("start").reportValidity() || !field("end").reportValidity()
       || facecamFields.some((name) => !field(name).reportValidity())) return;
-  if (field("framing").value === "gameplay") {
+  if (usesFacecam()) {
     if (!validCrop(cropValues())) {
       layoutStatus.textContent = "Keep the facecam crop inside the original frame.";
       return;

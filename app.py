@@ -471,7 +471,7 @@ def search_replay(job_id, directory, video_id, language, depth, clip_count=5, ea
             for interval in job.get("coverage") or ()
         ]
     merged_coverage = []
-    for start, end in sorted(recent_coverage):
+    for start, end in sorted((start, end) for start, end in recent_coverage):
         if merged_coverage and start <= merged_coverage[-1][1]:
             merged_coverage[-1][1] = max(merged_coverage[-1][1], end)
         else:
@@ -739,19 +739,25 @@ def gameplay_titles(matches):
     return titled
 
 
-def render(source: Path, clip: Clip, index: int, stream=False):
+def generation_options(stream, layout="standard"):
+    if stream and layout == "reaction":
+        return ExportOptions(framing="reaction", color="FFED4D", word_highlight=True, facecam=(0, 43.5, 15, 21.5))
+    return ExportOptions(framing="fit" if stream else "smart")
+
+
+def render(source: Path, clip: Clip, index: int, stream=False, layout="standard"):
     output = f"clip-{index}.mp4"
-    options = ExportOptions(framing="fit" if stream else "smart")
+    options = generation_options(stream, layout)
     tracking = track_faces(source, clip, source.parent, options)
     render_format(source, clip, source.parent / output, options, "vertical", tracking=tracking)
     return output
 
 
-def publish_early_preview(job_id, directory, match, hook, started_at):
+def publish_early_preview(job_id, directory, match, hook, started_at, layout="standard"):
     source, offset, clip = gameplay_titles([match[:3]])[0]
     clip = replace(clip, hook=hook or clip.hook)
     output = directory / "early-preview.mp4"
-    render_format(source, clip, output, ExportOptions(framing="fit"), "vertical", preview=True)
+    render_format(source, clip, output, generation_options(True, layout), "vertical", preview=True)
     update(job_id, first_preview_seconds=round(monotonic() - started_at, 1), early_preview={
         "title": hook or clip.title, "start": offset + clip.start, "end": offset + clip.end,
         "preview": f"/jobs/{job_id}/clips/{output.name}",
@@ -821,7 +827,8 @@ def publish_top_clip(job_id, directory, channel_id, clip, video_id):
 
 
 def process(job_id, source, stream, language, hook, video_id=None, scan_start=None, visual_ai=True, depth="balanced",
-            clip_count=5, clip_length=60, recording=None, vision_provider="local", publish_channel=None):
+            clip_count=5, clip_length=60, recording=None, vision_provider="local", publish_channel=None,
+            layout="standard"):
     started_at = monotonic()
     directory = source.parent
     scouting = None
@@ -847,7 +854,7 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
             try:
                 preview = None
                 if depth in {"deep", "wide"}:
-                    preview = lambda match: publish_early_preview(job_id, directory, match, hook, started_at)
+                    preview = lambda match: publish_early_preview(job_id, directory, match, hook, started_at, layout)
                 matches = search_replay(job_id, scouting, video_id, language, depth, clip_count, early_preview=preview)
             except (subprocess.SubprocessError, ValueError, OSError):
                 update(job_id, status="error", message="Could not scan this replay. Check that it plays publicly or enter a specific start time.")
@@ -923,7 +930,7 @@ def process(job_id, source, stream, language, hook, video_id=None, scan_start=No
                 clip_source = retained[clip_source]
             update(job_id, status="rendering", total=len(matches), message=f"Rendering short {index} of {len(matches)}.")
             clip = replace(clip, hook=hook or (clip.hook if stream else clip.title))
-            filename = render(clip_source, clip, index, stream)
+            filename = render(clip_source, clip, index, stream, layout)
             with lock:
                 projects[job_id, index] = (clip_source, clip, stream)
             results.append({
@@ -1064,6 +1071,9 @@ def create_job():
     hook = request.form.get("hook", "").strip()
     start = request.form.get("scan_start", "").strip()
     depth = request.form.get("depth", "balanced")
+    layout = request.form.get("layout", "standard")
+    if layout not in {"standard", "reaction"}:
+        return jsonify(error="Choose a supported clip layout."), 400
     try:
         clip_count = int(request.form.get("clip_count", 5))
         clip_length = int(request.form.get("clip_length", 60))
@@ -1120,9 +1130,10 @@ def create_job():
     if source_file:
         source_file.save(source)
     source_name = Path(source_file.filename).name if source_file else f"{recording[0]} recording" if recording else ""
-    update(job_id, status="queued", message="Waiting to process video.", clips=[], video_id=video_id, source_name=source_name)
+    update(job_id, status="queued", message="Waiting to process video.", clips=[], video_id=video_id, source_name=source_name,
+           layout=layout)
     worker.submit(process, job_id, source, mode == "stream", language or None, hook, video_id,
-                  scan_start, visual_ai, depth, clip_count, clip_length, recording, vision_provider, publish_channel)
+                  scan_start, visual_ai, depth, clip_count, clip_length, recording, vision_provider, publish_channel, layout)
     return jsonify(id=job_id), 202
 
 
@@ -1177,12 +1188,14 @@ def edit_clip(job_id, index):
         abort(404)
     source, clip, stream = project
     if request.method == "GET":
+        options = generation_options(stream, jobs[job_id].get("layout", "standard"))
         cues = [{"start": start - clip.start, "end": end - clip.start, "text": text}
                 for start, end, text in caption_cues(clip)]
         return render_template("editor.html", previous_exports=previous_exports, project={"jobId": job_id, "index": index,
             "duration": clip.end - clip.start, "headline": clip.hook, "cues": cues,
             "moment": clip.event_time - clip.start if clip.event_time is not None and clip.start <= clip.event_time < clip.end else None,
-            "framing": "fit" if stream else "smart"})
+            "framing": options.framing, "color": options.color, "wordHighlight": options.word_highlight,
+            "facecam": options.facecam})
     try:
         payload = json.loads(request.form.get("edit", "{}"))
         edited, options = parse_edit(clip, payload)
@@ -1420,7 +1433,7 @@ def create_batch(job_id):
         edit_id = uuid4().hex
         directory = workspace / job_id / edit_id
         directory.mkdir()
-        options = ExportOptions(formats=formats, framing="fit" if stream else "smart")
+        options = replace(generation_options(stream, jobs[job_id].get("layout", "standard")), formats=formats)
         with lock:
             edits[edit_id] = {"job": job_id, "index": index, "status": "queued", "files": [], "message": "Queued for export."}
             persist(job_id)

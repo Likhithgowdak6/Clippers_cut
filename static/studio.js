@@ -64,6 +64,8 @@ recordingFolder.addEventListener("change", () => {
 
 function updateScanWindow() {
   scanWindow.hidden = mode.value !== "stream";
+  document.querySelector("#gameplay-layout-field").hidden = scanWindow.hidden;
+  document.querySelector("#gameplay-layout").disabled = scanWindow.hidden;
   talkOptions.hidden = !scanWindow.hidden;
   scanStart.disabled = scanWindow.hidden;
   scanDepth.disabled = scanWindow.hidden || Boolean(scanStart.value.trim());

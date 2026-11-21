@@ -7,7 +7,7 @@
   <title>Edit clip · Shortlist Studio</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
   <script id="project" type="application/json">{{ project | tojson }}</script>
-  <script defer src="{{ url_for('static', filename='editor.js', v='visual-crop') }}"></script>
+  <script defer src="{{ url_for('static', filename='editor.js', v='reaction-split') }}"></script>
 </head>
 <body class="studio-app">
   {{ navigation('library') }}
@@ -75,7 +75,7 @@
       <fieldset>
         <legend>Framing &amp; formats</legend>
         <div class="grid">
-          <label>Framing <select id="framing"><option value="smart">Follow faces</option><option value="center">Center crop</option><option value="fit">Fit entire frame</option><option value="gameplay">Gameplay and facecam</option></select></label>
+          <label>Framing <select id="framing"><option value="smart">Follow faces</option><option value="center">Center crop</option><option value="fit">Fit entire frame</option><option value="gameplay">Gameplay and facecam</option><option value="reaction">Reaction split</option></select></label>
         </div>
         <div class="row">
           <label><input type="checkbox" name="shape" value="vertical" checked> 9:16 · Shorts</label>

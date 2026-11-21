@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch>=2.4' torchvision \
     && pip install --no-cache-dir -r requirements.txt 'waitress>=3.0,<4'
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig \
+    && apt-get install -y --no-install-recommends fontconfig fonts-symbola \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s "$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" /usr/local/bin/ffmpeg
 RUN useradd --create-home --uid 10001 shortlist \

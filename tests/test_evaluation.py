@@ -9,11 +9,14 @@ import numpy as np
 import app
 from app import gameplay_rank
 from clipping import Clip, rank_gameplay, same_gameplay_moment
-from evaluation import score
+from evaluation import covered_seconds, score
 from vision import event_frames, review_event, visual_headline
 
 
 class EvaluationTest(unittest.TestCase):
+    def test_coverage_accepts_live_and_persisted_intervals(self):
+        self.assertEqual(covered_seconds([(0, 20), [10, 30], [40, 50]]), 40)
+
     def test_shortlist_keeps_audience_and_sustained_windows_over_motion_only(self):
         overall = [(8, None, 0, None, None), (7, None, 60, None, None), (6, None, 120, None, None)]
         audience = [(2, None, 180, None, None)]
@@ -57,6 +60,10 @@ class EvaluationTest(unittest.TestCase):
             reopened_jobs, _, _, _ = app.load_projects(app.workspace, app.app.logger)
             app.jobs.update(reopened_jobs)
             self.assertEqual(app.jobs[previous_id]["status"], "error")
+            app.jobs["saved-complete"] = {"video_id": video_id, "source_seconds": 120,
+                                          "status": "complete", "coverage": [[0, 20]]}
+            app.jobs["live-complete"] = {"video_id": video_id, "source_seconds": 120,
+                                         "status": "complete", "coverage": [(0, 20)]}
             output = app.workspace / current_id
             output.mkdir()
             app.update(current_id, video_id=video_id, status="queued", clips=[])

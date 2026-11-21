@@ -12,6 +12,7 @@ import numpy as np
 from clipping import CAPTION_FONTS, CAPTION_STYLES, Segment, timed_caption_cues, captions
 
 FORMATS = {"vertical": (1080, 1920), "square": (1080, 1080), "wide": (1920, 1080)}
+FACECAM_FRAMINGS = {"gameplay", "reaction"}
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ def parse_edit(clip, payload):
     color = payload.get("color", "E3FF82").lstrip("#")
     headline = payload.get("headline", clip.hook).strip()
     brand = payload.get("brand", "").strip()
-    if framing not in {"smart", "center", "fit", "gameplay"} or style not in CAPTION_STYLES or caption_font not in CAPTION_FONTS:
+    if framing not in {"smart", "center", "fit", *FACECAM_FRAMINGS} or style not in CAPTION_STYLES or caption_font not in CAPTION_FONTS:
         raise ValueError("Choose a supported framing mode and caption style.")
     if not re.fullmatch(r"[0-9A-Fa-f]{6}", color) or len(headline) > 90 or len(brand) > 40:
         raise ValueError("Check the brand color and text lengths.")
@@ -106,7 +107,7 @@ def parse_edit(clip, payload):
         broll_start = max(0, match.start - base_time)
     edited = replace(clip, start=base_time, end=base_time + edited_duration, hook=headline, segments=tuple(segments))
     facecam = (0, 44, 21, 26)
-    if framing == "gameplay":
+    if framing in FACECAM_FRAMINGS:
         x = number("facecam_x", 0, 0, 95)
         y = number("facecam_y", 44, 0, 95)
         w = number("facecam_width", 21, 5, 100)
@@ -193,11 +194,12 @@ def render_format(source, clip, output, options, shape, *, broll=None, tracking=
         height //= 2
     directory = output.parent
     subtitle = output.with_suffix(".ass")
+    split_gameplay = options.framing in FACECAM_FRAMINGS and shape == "vertical"
+    reaction = split_gameplay and options.framing == "reaction"
     subtitle.write_text(captions(clip, width, height, options.style, options.brand, options.color,
-                                options.caption_font, options.word_highlight), encoding="utf-8")
+                                options.caption_font, options.word_highlight, reaction=reaction), encoding="utf-8")
     dimensions = f"{width}:{height}"
-    split_gameplay = options.framing == "gameplay" and shape == "vertical"
-    if options.framing in {"fit", "gameplay"}:
+    if options.framing in {"fit", *FACECAM_FRAMINGS}:
         framing = (f"scale={dimensions}:flags=lanczos:force_original_aspect_ratio=decrease:force_divisible_by=2,"
                    f"pad={dimensions}:(ow-iw)/2:(oh-ih)/2:0x151515")
     else:
@@ -205,7 +207,21 @@ def render_format(source, clip, output, options, shape, *, broll=None, tracking=
         framing = f"scale={dimensions}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,{send}{crop}={dimensions}"
     base = [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-ss", str(clip.start), "-i", str(source)]
     graph = f"[0:v]{framing},setsar=1[main];"
-    if split_gameplay:
+    if reaction:
+        x, y, w, h = (value / 100 for value in options.facecam)
+        face_h = height // 4 * 2
+        game_h = height - face_h
+        graph = (
+            "[0:v]split=2[game][cam];"
+            f"[cam]crop=iw*{w:.6f}:ih*{h:.6f}:iw*{x:.6f}:ih*{y:.6f},"
+            f"scale={width}:{face_h}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,"
+            f"crop={width}:{face_h},setsar=1[face];"
+            f"[game]scale={width}:{game_h}:flags=lanczos:force_original_aspect_ratio=increase:force_divisible_by=2,"
+            f"crop={width}:{game_h}:(iw-ow)*0.54,setsar=1[play];"
+            f"[face][play]vstack,drawbox=x=0:y={face_h - height // 320}:w=iw:h={height // 160}:"
+            "color=white:t=fill[main];"
+        )
+    elif split_gameplay:
         x, y, w, h = (value / 100 for value in options.facecam)
         panel_w, panel_h = width * 42 // 200 * 2, height * 16 // 200 * 2
         game_h = height * 42 // 200 * 2

@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Shortlist Studio</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}">
-  <script src="{{ url_for('static', filename='studio.js', v='private-youtube-upload') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='reaction-split') }}" defer></script>
 </head>
 <body class="studio-app">
   {{ navigation('create') }}
@@ -48,6 +48,14 @@
           <option value="30">30 seconds</option><option value="60" selected>1 minute</option>
           <option value="90">90 seconds</option><option value="120">2 minutes</option>
         </select>
+      </div>
+      <div id="gameplay-layout-field" hidden>
+        <label for="gameplay-layout">Clip layout</label>
+        <select id="gameplay-layout" name="layout" disabled>
+          <option value="standard">Full gameplay</option>
+          <option value="reaction">Reaction split</option>
+        </select>
+        <small>Reaction split places the facecam above gameplay and highlights spoken words at the divider. Adjust the facecam crop in the clip editor.</small>
       </div>
       <details id="scan-window" class="advanced-options" hidden>
         <summary>Gaming scan settings</summary>

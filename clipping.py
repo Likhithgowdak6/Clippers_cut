@@ -198,7 +198,7 @@ CAPTION_STYLES = {"bold", "minimal", "accent", "neon", "candy"}
 
 
 def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF82", font="sans",
-             word_highlight=False):
+             word_highlight=False, *, reaction=False):
     scale = min(width, height) / 1080
     font_size = round((67 if style != "minimal" else 52) * scale)
     hook_color = color[4:6] + color[2:4] + color[0:2]
@@ -209,6 +209,9 @@ def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF8
     elif style == "candy":
         primary, outline, border, stroke, shadow = "&H00FFFFFF", "&H002C174E", 3, 9, 0
     family = CAPTION_FONTS[font]
+    caption_alignment = 5 if reaction else 2
+    hook_margin = height // (20 if reaction else 8)
+    hook_size = 54 if reaction else 78
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
         "[V4+ Styles]",
@@ -216,9 +219,9 @@ def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF8
         "Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
         "Alignment,MarginL,MarginR,MarginV,Encoding",
         f"Style: Default,{family},{font_size},{primary},&H00FFFFFF,{outline},{outline if border == 3 else '&H96000000'},"
-        f"-1,0,0,0,100,100,0,0,{border},{stroke},{shadow},2,{width//13},{width//13},{height*15//100},1",
-        f"Style: Hook,Arial,{round(78*scale)},&H00{hook_color},&H00FFFFFF,&H00090909,&H96000000,"
-        f"-1,0,0,0,100,100,0,0,1,6,1,8,{width//10},{width//10},{height//8},1",
+        f"-1,0,0,0,100,100,0,0,{border},{stroke},{shadow},{caption_alignment},{width//13},{width//13},{height*15//100},1",
+        f"Style: Hook,Arial,{round(hook_size*scale)},&H00{hook_color},&H00FFFFFF,&H00090909,&H96000000,"
+        f"-1,0,0,0,100,100,0,0,1,6,1,8,{width//10},{width//10},{hook_margin},1",
         f"Style: Brand,Arial,{round(34*scale)},&H00{hook_color},&H00FFFFFF,&H00090909,&H96000000,"
         f"-1,0,0,0,100,100,0,0,1,3,0,9,32,32,{height//22},1",
         "[Events]", "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
@@ -232,11 +235,13 @@ def captions(clip, width=1080, height=1920, style="bold", brand="", color="E3FF8
                 f"Default,,0,0,0,,{text}")
 
     for start, end, phrase, words in timed_caption_cues(clip):
+        if reaction:
+            phrase = phrase.upper()
         visible = [(max(start, a), min(end, b), text) for a, b, text in words if b > start and a < end]
         if not word_highlight or not visible:
             lines.append(dialogue(start, end, ass_text(phrase)))
             continue
-        text_words = [item[2] for item in visible]
+        text_words = [item[2].upper() if reaction else item[2] for item in visible]
         text_words[0] = text_words[0].lstrip()
         text_words[-1] = text_words[-1].rstrip()
         for index, (begin, _, _) in enumerate(visible):
